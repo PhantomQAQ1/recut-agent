@@ -10,8 +10,11 @@ import StoryboardStrip from './components/StoryboardStrip.vue'
 import PlanPanel from './components/PlanPanel.vue'
 import RefineDialog from './components/RefineDialog.vue'
 import ExportDialog from './components/ExportDialog.vue'
+import CharacterPicker from './components/CharacterPicker.vue'
 import { api } from './api/client'
 import { useAuth } from './composables/useAuth'
+import { useHistory } from './composables/useHistory'
+import { mergeAnchors } from './lib/consistency'
 import { downloadBlob, downloadText, safeFilename, toCsv, toMarkdown } from './lib/export'
 import type { Shot, ShotPlan } from './lib/types'
 import {
@@ -100,7 +103,8 @@ async function refineShot(payload: { shot: Shot; instruction: string }) {
       shot: payload.shot,
       instruction: payload.instruction,
       model: model.value,
-      anchors: anchors.value,
+      // F1：把该镜绑定的角色锚点并入本次微调请求
+      anchors: mergeAnchors(anchors.value, payload.shot, assetCharacters.value),
     })
     refineCandidate.value = {
       before: { ...payload.shot },
@@ -131,6 +135,118 @@ function removeShot(shot: Shot) {
   if (refiningId.value === shot.id) refiningId.value = null
   notify(`已删除「${removed?.title || '该镜头'}」`)
 }
+
+// ---- A1：重排 ----
+
+function moveShot({ from, to }: { from: number; to: number }) {
+  if (to < 0 || to >= shots.value.length || from === to) return
+  const next = [...shots.value]
+  const [moved] = next.splice(from, 1)
+  if (!moved) return
+  next.splice(to, 0, moved)
+  shots.value = next
+  activeShotIndex.value = to
+}
+
+// ---- F1 / F2：角色绑定与一致性 ----
+
+const bindingShot = ref<Shot | null>(null)
+
+function openBinding(shot: Shot) {
+  bindingShot.value = shot
+}
+
+function applyBinding(ids: number[]) {
+  if (!bindingShot.value) return
+  bindingShot.value.character_ids = ids
+  bindingShot.value = null
+  notify(ids.length ? `已绑定 ${ids.length} 个角色` : '已解除全部角色绑定')
+}
+
+/** 把绑定角色的锚点补到提示词开头（已出现的不重复加）。 */
+function injectAnchors(shot: Shot) {
+  const tokens = mergeAnchors([], shot, assetCharacters.value)
+  if (!tokens.length) {
+    notify('这个镜头还没有绑定角色')
+    return
+  }
+  const haystack = `${shot.prompt}\n${shot.runwayPrompt}`.toLowerCase()
+  const missing = tokens.filter((token) => !haystack.includes(token.toLowerCase()))
+  if (!missing.length) {
+    notify('提示词里已经包含这些锚点')
+    return
+  }
+  const prefix = missing.join(', ')
+  shot.prompt = `${prefix}, ${shot.prompt}`.trim()
+  shot.runwayPrompt = `${prefix}, ${shot.runwayPrompt}`.trim()
+  notify(`已注入 ${missing.length} 个锚点`)
+}
+
+// ---- A2：撤销 / 重做 ----
+
+const history = useHistory(
+  () => shots.value,
+  (next) => {
+    shots.value = next
+  },
+)
+
+// ---- A3：快捷键 ----
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null
+  if (!element || !element.tagName) return false
+  return (
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable === true
+  )
+}
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.isComposing) return
+  const meta = event.ctrlKey || event.metaKey
+  const key = event.key.toLowerCase()
+
+  if (meta && key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) history.redo()
+    else history.undo()
+    return
+  }
+  if (meta && key === 'y') {
+    event.preventDefault()
+    history.redo()
+    return
+  }
+  if (meta && event.key === 'Enter') {
+    event.preventDefault()
+    if (!loading.value && !plan.value) void generate()
+    return
+  }
+
+  // 在输入框里打字时不要吃掉方向键/删除键
+  if (isTypingTarget(event.target)) return
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (!shots.value.length) return
+    event.preventDefault()
+    const current = activeShotIndex.value ?? 0
+    const next =
+      event.key === 'ArrowDown'
+        ? Math.min(shots.value.length - 1, current + 1)
+        : Math.max(0, current - 1)
+    scrollToShot(next)
+    return
+  }
+
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    const index = activeShotIndex.value
+    const shot = index === null ? undefined : shots.value[index]
+    if (!shot) return
+    event.preventDefault()
+    removeShot(shot)
+  }
+}
+
 // --------------------------------------------------------------------------- //
 // 故事板：镜头计划（B4）、单镜微调（B1）、参考首帧（C1）、导出（E1/E3）
 // --------------------------------------------------------------------------- //
@@ -411,6 +527,8 @@ function applyStoryboard(doc: Partial<StoryboardDoc> | undefined) {
   // 计划也随项目保存，刷新后可以继续展开未完成的镜头。
   plan.value = (doc.plan as ShotPlan | null | undefined) ?? null
   expandProgress.value = {}
+  // 换项目后清空撤销栈，避免撤销到上一个项目的内容
+  history.reset()
 }
 
 async function refreshProjects() {
@@ -691,6 +809,7 @@ function toggleTagFilter(tagId: number) {
 
 onMounted(async () => {
   window.addEventListener('scroll', onViewportScroll, { passive: true })
+  window.addEventListener('keydown', onKeydown)
   await bootstrap()
   try {
     await syncProjects()
@@ -724,6 +843,7 @@ watch(user, async (current, previous) => {
 onBeforeUnmount(() => {
   window.clearTimeout(saveTimer)
   window.removeEventListener('scroll', onViewportScroll)
+  window.removeEventListener('keydown', onKeydown)
 })
 
 </script>
@@ -747,14 +867,14 @@ onBeforeUnmount(() => {
         <template v-else>
   <PlanPanel v-if="plan" :plan="plan" :busy="expanding" :progress="expandProgress" @confirm="confirmPlan" @cancel="cancelPlan" @update="updatePlan" />
   <template v-else>
-    <ShotBoard :shots="shots" :model="model" :anchors="anchors" :view-mode="viewMode" :refining-id="refiningId" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @remove="removeShot" @add="addShot" />
+    <ShotBoard :shots="shots" :model="model" :anchors="anchors" :view-mode="viewMode" :refining-id="refiningId" :characters="assetCharacters" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @remove="removeShot" @bind="openBinding" @inject-anchors="injectAnchors" @move="moveShot" @add="addShot" />
     <StoryboardStrip :shots="shots" :active-index="activeShotIndex" @select="scrollToShot" />
   </template>
 </template>
 <footer class="canvas-footer"><span>{{ saveLabel }}</span><span>所有更改均已同步 <Check :size="12" /></span></footer>
       </main>
       <aside class="right-panel"><div class="right-heading"><div><p class="eyebrow">CREATIVE ASSETS</p><h2>资产与灵感</h2></div><button class="icon-button"><MoreHorizontal :size="17" /></button></div><section class="asset-section"><div class="section-title"><div><span class="section-icon amber"><Aperture :size="14" /></span><b>角色资产库</b></div><button class="text-action" @click="openEditor(null)">新建 <ArrowRight :size="12" /></button></div><CharacterCard v-for="(character, index) in visibleCharacters" :key="character.id" :character="character" :index="index" @edit="openEditor(character)" @remove="removeCharacter(character)" @remove-tag="detachTag" @add-tag="openEditor(character)" /><p v-if="!visibleCharacters.length" class="asset-empty">{{ selectedTagId === null ? '还没有角色，点右上角「新建」' : '该标签下还没有角色' }}</p></section><TagPanel :tags="assetTags" :selected="selectedTagId" @select="toggleTagFilter" @rename="renameTag" @remove="removeTag" @create="createTagFromPanel" /><div class="insight-card"><AudioLines :size="15" /><div><span>DIRECTOR'S NOTE</span><p>镜头与音乐鼓点的情绪峰值重合，试试缩短时长，让转场更有力量。</p><button @click="notify('已应用导演建议')">应用建议 <ArrowRight :size="12" /></button></div></div></aside>
-    </div><CharacterEditor v-if="editorOpen" :character="editingCharacter" :tags="assetTags" :saving="savingCharacter" :error="editorError" :create-tag="createTagFromEditor" @close="closeEditor" @save="saveCharacter" /><RefineDialog v-if="refineCandidate" :before="refineCandidate.before" :after="refineCandidate.after" :instruction="refineCandidate.instruction" @apply="applyRefine" @cancel="cancelRefine" /><ExportDialog v-if="exportOpen" :shots="shots" :project-name="project" :model="model" :busy="exporting" @close="exportOpen = false" @export="runExport" /><input ref="referenceInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp" @change="onReferenceSelected" /><LoginDialog v-if="!user && !bootstrapping" /><Transition><div v-if="toast" class="toast"><span><Check :size="14" /></span>{{ toast }}</div></Transition>
+    </div><CharacterPicker v-if="bindingShot" :characters="assetCharacters" :selected="bindingShot.character_ids ?? []" :prompt="`${bindingShot.prompt}\n${bindingShot.runwayPrompt}`" @apply="applyBinding" @close="bindingShot = null" /><CharacterEditor v-if="editorOpen" :character="editingCharacter" :tags="assetTags" :saving="savingCharacter" :error="editorError" :create-tag="createTagFromEditor" @close="closeEditor" @save="saveCharacter" /><RefineDialog v-if="refineCandidate" :before="refineCandidate.before" :after="refineCandidate.after" :instruction="refineCandidate.instruction" @apply="applyRefine" @cancel="cancelRefine" /><ExportDialog v-if="exportOpen" :shots="shots" :project-name="project" :model="model" :busy="exporting" @close="exportOpen = false" @export="runExport" /><input ref="referenceInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp" @change="onReferenceSelected" /><LoginDialog v-if="!user && !bootstrapping" /><Transition><div v-if="toast" class="toast"><span><Check :size="14" /></span>{{ toast }}</div></Transition>
   </div>
 </template>
 
@@ -919,4 +1039,25 @@ onBeforeUnmount(() => {
 .export-issues ul{margin:0 0 8px;padding-left:16px;max-height:26vh;overflow:auto}
 .export-issues li{font-size:9px;line-height:1.7;color:#93a3b8}
 .export-issues li.error{color:#fda4af}
+/* ---- 重排 / 角色绑定（A1 / F1 / F2） ---- */
+.shot-move-group{display:flex;flex-direction:column;gap:1px}
+.shot-move{width:22px;height:14px;display:grid;place-items:center;border:1px solid #33415a;border-radius:4px;background:#0b1220;color:#7b8798;padding:0}
+.shot-move:hover:not(:disabled){border-color:#f59e0b88;color:#fbbf24}
+.shot-move:disabled{opacity:.3;cursor:not-allowed}
+.shot-bindings{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 8px}
+.binding-chip{display:inline-flex;align-items:center;gap:3px;padding:3px 7px;border:1px solid #2b3a52;border-radius:999px;background:#0d1626;color:#9fb0c8;font-size:9px}
+.binding-chip.missing{border-color:#7f5f18;background:#2a1f0a;color:#fbbf24}
+.binding-add,.binding-inject{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px dashed #33415a;border-radius:999px;background:transparent;color:#7b8798;font-size:9px}
+.binding-add:hover,.binding-inject:hover{border-color:#f59e0b88;color:#fbbf24}
+.binding-inject{border-style:solid}
+.binding-list{display:flex;flex-direction:column;gap:6px;max-height:44vh;overflow:auto}
+.binding-option{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid #1e293b;border-radius:8px;background:#0a1120;text-align:left}
+.binding-option.active{border-color:#f59e0b;background:#1a2434}
+.binding-mark{width:16px;height:16px;flex:none;display:grid;place-items:center;border:1px solid #33415a;border-radius:4px;color:#fbbf24}
+.binding-option.active .binding-mark{border-color:#f59e0b;background:#f59e0b22}
+.binding-body{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.binding-body b{font-size:11px;color:#e2e8f0}
+.binding-body small{font-size:9px;color:#64748b}
+.binding-body em{font-style:normal;font-size:9px;color:#5b6779;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.binding-warn{color:#fbbf24;flex:none}
 </style>

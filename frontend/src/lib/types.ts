@@ -17,7 +17,19 @@ export type Shot = {
   scene: SceneKind
   /** 参考首帧（uploads.id）；老数据没有这个字段。 */
   reference_image_id?: number | null
+  /** F1：绑定的角色资产 id；老数据没有这个字段。 */
+  character_ids?: number[]
 }
+
+/** 绑定与一致性检查只关心这几个字段。 */
+export type CharacterLike = {
+  id: number
+  name: string
+  prompt_anchor: string
+}
+
+/** 卡片上渲染的角色绑定标签。 */
+export type BindingChip = { id: number; name: string; missing: boolean }
 
 export const MODELS = ['即梦 Jimeng', '可灵 Kling', 'Runway Gen-3'] as const
 export type ModelName = (typeof MODELS)[number]

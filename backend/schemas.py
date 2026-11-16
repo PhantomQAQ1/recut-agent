@@ -56,6 +56,9 @@ class Shot(BaseModel):
     scene: Scene
     # C1：参考首帧（uploads.id）。旧数据没有该字段，必须可选。
     reference_image_id: int | None = None
+    # F1：本镜绑定的角色资产 id（存在 storyboard JSON 里，不需要单独建表）。
+    # 模型若返回同名字段，会被 normalize_shot 丢弃，不能让模型改写绑定。
+    character_ids: list[int] = Field(default_factory=list)
 
 
 ModelName = Literal["即梦 Jimeng", "可灵 Kling", "Runway Gen-3"]

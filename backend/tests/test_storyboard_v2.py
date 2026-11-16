@@ -144,6 +144,21 @@ def test_refine_preserves_original_id_and_changes_prompt():
     assert result.duration == original.duration
 
 
+def test_shot_accepts_character_ids_but_model_cannot_inject_them():
+    """F1：绑定关系由前端持有；模型返回的 character_ids 必须被丢弃。"""
+    import asyncio
+
+    original = Shot(**{**SHOT_JSON, "id": 3, "character_ids": [1, 5]})
+    assert original.character_ids == [1, 5]
+
+    sneaky = {**SHOT_JSON, "character_ids": [999]}
+    fake = fake_client(json.dumps({"shot": sneaky}, ensure_ascii=False))
+    result = asyncio.run(
+        storyboard.refine_shot(RefineRequest(shot=original, instruction="换个光"), client=fake)
+    )
+    assert result.character_ids == []  # normalize 丢弃模型写入的绑定
+
+
 # --------------------------------------------------------------------------- #
 # C1 上传
 # --------------------------------------------------------------------------- #
