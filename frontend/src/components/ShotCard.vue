@@ -11,6 +11,7 @@ import {
   MessageSquareText,
   Send,
   Sparkles,
+  Trash2,
   X,
 } from 'lucide-vue-next'
 import { paletteBackground, paletteLabel } from '../lib/palettes'
@@ -30,6 +31,7 @@ const emit = defineEmits<{
   refine: [payload: { shot: Shot; instruction: string }]
   upload: [shot: Shot]
   removeReference: [shot: Shot]
+  remove: [shot: Shot]
 }>()
 
 const label = computed(() => `SHOT ${String(props.index + 1).padStart(2, '0')}`)
@@ -55,7 +57,17 @@ function submitRefine() {
           <small>{{ paletteLabel(shot.palette) }}</small>
         </div>
       </div>
-      <span class="move-badge"><Focus :size="11" />{{ shot.move }}</span>
+      <div class="shot-top-right">
+        <span class="move-badge"><Focus :size="11" />{{ shot.move }}</span>
+        <button
+          class="shot-delete"
+          type="button"
+          aria-label="删除镜头"
+          @click="emit('remove', shot)"
+        >
+          <Trash2 :size="13" />
+        </button>
+      </div>
     </div>
 
     <div class="scene-art" :style="{ backgroundImage: background }">

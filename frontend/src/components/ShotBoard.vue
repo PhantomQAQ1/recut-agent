@@ -17,6 +17,7 @@ defineEmits<{
   refine: [payload: { shot: Shot; instruction: string }]
   upload: [shot: Shot]
   removeReference: [shot: Shot]
+  remove: [shot: Shot]
   add: []
 }>()
 </script>
@@ -35,6 +36,7 @@ defineEmits<{
       @refine="$emit('refine', $event)"
       @upload="$emit('upload', $event)"
       @remove-reference="$emit('removeReference', $event)"
+      @remove="$emit('remove', $event)"
     />
     <button v-if="!props.shots.length" class="add-shot add-shot-empty" type="button" @click="$emit('add')">
       <Plus :size="15" />还没有镜头，先点左侧「生成分镜脚本」

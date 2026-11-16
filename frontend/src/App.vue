@@ -115,6 +115,22 @@ async function refineShot(payload: { shot: Shot; instruction: string }) {
 }
 function addAnchor() { const value = window.prompt('输入角色视觉锚点'); if (value?.trim()) anchors.value.push(value.trim()) }
 function addShot() { const previous = shots.value[shots.value.length - 1]; shots.value.push({ ...previous, id: Date.now(), title: '新镜头：点击此处开始创作', description: '为这个镜头补充核心剧情与画面描述……', prompt: `${anchors.value.join(', ')}, 新镜头画面描述，电影级光影，细腻质感。`, runwayPrompt: `Cinematic shot, ${anchors.value.join(', ')}, describe the new scene, cinematic lighting.`, edit: '' }) }
+
+function removeShot(shot: Shot) {
+  const index = shots.value.findIndex((item) => item.id === shot.id)
+  if (index === -1) return
+  if (!window.confirm(`删除「${shot.title || '该镜头'}」？此操作不可恢复。`)) return
+  const removed = shots.value[index]
+  shots.value.splice(index, 1)
+  // 缩略导航的高亮索引可能已越界，重置掉
+  if (activeShotIndex.value !== null && activeShotIndex.value >= shots.value.length) {
+    activeShotIndex.value = null
+  }
+  // 清理可能残留的"删除中"微调状态
+  if (refineCandidate.value?.after.id === shot.id) refineCandidate.value = null
+  if (refiningId.value === shot.id) refiningId.value = null
+  notify(`已删除「${removed?.title || '该镜头'}」`)
+}
 // --------------------------------------------------------------------------- //
 // 故事板：镜头计划（B4）、单镜微调（B1）、参考首帧（C1）、导出（E1/E3）
 // --------------------------------------------------------------------------- //
@@ -731,7 +747,7 @@ onBeforeUnmount(() => {
         <template v-else>
   <PlanPanel v-if="plan" :plan="plan" :busy="expanding" :progress="expandProgress" @confirm="confirmPlan" @cancel="cancelPlan" @update="updatePlan" />
   <template v-else>
-    <ShotBoard :shots="shots" :model="model" :anchors="anchors" :view-mode="viewMode" :refining-id="refiningId" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @add="addShot" />
+    <ShotBoard :shots="shots" :model="model" :anchors="anchors" :view-mode="viewMode" :refining-id="refiningId" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @remove="removeShot" @add="addShot" />
     <StoryboardStrip :shots="shots" :active-index="activeShotIndex" @select="scrollToShot" />
   </template>
 </template>
@@ -841,6 +857,9 @@ onBeforeUnmount(() => {
 .shot-card:hover .scene-actions,.scene-actions:focus-within{opacity:1}
 .scene-actions button{width:22px;height:22px;display:grid;place-items:center;border:1px solid #33415a;border-radius:6px;background:#0b1220cc;color:#cbd5e1}
 .scene-actions button:hover{border-color:#f59e0b88;color:#fbbf24}
+.shot-top-right{display:flex;align-items:center;gap:6px}
+.shot-delete{width:24px;height:24px;display:grid;place-items:center;border:1px solid #33415a;border-radius:6px;background:#0b1220;color:#64748b;opacity:.75;transition:opacity .15s,color .15s,border-color .15s}
+.shot-delete:hover,.shot-delete:focus-visible{opacity:1;border-color:#f43f5e88;color:#fda4af}
 .shot-meta{display:flex;gap:6px;margin:6px 0 8px}
 .shot-meta span{padding:2px 6px;border:1px solid #1e293b;border-radius:4px;background:#0b1220;color:#8fa0b8;font:9px 'DM Mono';letter-spacing:.4px}
 /* ---- 镜头计划面板（B4） ---- */
