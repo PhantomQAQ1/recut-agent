@@ -21,7 +21,7 @@ const emit = defineEmits<{
   removeReference: [shot: Shot]
   remove: [shot: Shot]
   bind: [shot: Shot]
-  injectAnchors: [shot: Shot]
+  injectMissing: [shot: Shot]
   move: [payload: { from: number; to: number }]
   add: []
 }>()
@@ -59,7 +59,7 @@ function chipsFor(shot: Shot): BindingChip[] {
       @remove-reference="emit('removeReference', $event)"
       @remove="emit('remove', $event)"
       @bind="emit('bind', $event)"
-      @inject-anchors="emit('injectAnchors', $event)"
+      @inject-missing="emit('injectMissing', $event)"
       @move-up="emit('move', { from: index, to: index - 1 })"
       @move-down="emit('move', { from: index, to: index + 1 })"
     />

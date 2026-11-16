@@ -14,7 +14,7 @@ import CharacterPicker from './components/CharacterPicker.vue'
 import { api } from './api/client'
 import { useAuth } from './composables/useAuth'
 import { useHistory } from './composables/useHistory'
-import { mergeAnchors } from './lib/consistency'
+import { anchorTokens, mergeAnchors } from './lib/consistency'
 import { downloadBlob, downloadText, safeFilename, toCsv, toMarkdown } from './lib/export'
 import type { Shot, ShotPlan } from './lib/types'
 import {
@@ -34,7 +34,31 @@ const project = ref('黑神话：最后一盏灯')
 const idea = ref('黄昏时分，天命人走进一座被遗忘的戏台。台上空无一人，锣鼓却自己响了起来……')
 const style = ref('燃向踩点')
 const styles = ['搞笑反转', '燃向踩点', '黑深残', '日常整活']
-const anchors = ref(['golden circlet', 'monkey warrior', 'brown fur'])
+// 项目级角色：锚点从角色资产派生，不再让用户手打字符串（避免三处表述不一致）
+const projectCharacterIds = ref<number[]>([])
+// 项目补充词：画风、镜头语言这类不属于任何角色的词，仍然保留下手位
+const extras = ref<string[]>([])
+/** 由项目角色 + 补充词合成的锚点，生成/展开/微调都用它。 */
+const projectAnchors = computed(() => {
+  const tokens: string[] = []
+  for (const character of assetCharacters.value) {
+    if (projectCharacterIds.value.includes(character.id)) {
+      tokens.push(...anchorTokens(character))
+    }
+  }
+  const merged = [...tokens, ...extras.value].map((item) => item.trim()).filter(Boolean)
+  return Array.from(new Set(merged))
+})
+/** 每个锚点在多少个镜头里真的出现了（只做统计与提示，不自动改写）。 */
+const anchorStats = computed(() =>
+  projectAnchors.value.map((text) => {
+    const needle = text.toLowerCase()
+    const hits = shots.value.filter((shot) =>
+      `${shot.prompt}\n${shot.runwayPrompt}`.toLowerCase().includes(needle),
+    ).length
+    return { text, hits, total: shots.value.length }
+  }),
+)
 const loading = ref(false)
 const toast = ref('')
 const selectedFile = ref<File | null>(null)
@@ -57,7 +81,7 @@ async function generate() {
     const data = await api.post<{ plan: ShotPlan }>('/api/v1/storyboard/plan', {
       idea: idea.value,
       style: style.value,
-      anchors: anchors.value,
+      anchors: projectAnchors.value,
       model: model.value,
     })
     if (!data.plan?.shots?.length) throw new Error('模型没有返回镜头计划')
@@ -82,7 +106,7 @@ async function reverse() {
     const body = new FormData()
     body.append('file', selectedFile.value)
     body.append('model', model.value)
-    body.append('anchors', anchors.value.join(','))
+    body.append('anchors', projectAnchors.value.join(','))
     const data = await api.upload<{ shots?: Shot[] }>('/api/v1/storyboard/reverse', body)
     const next = data.shots ?? []
     if (!next.length) throw new Error('没有解析出镜头，请更换素材后重试')
@@ -104,7 +128,7 @@ async function refineShot(payload: { shot: Shot; instruction: string }) {
       instruction: payload.instruction,
       model: model.value,
       // F1：把该镜绑定的角色锚点并入本次微调请求
-      anchors: mergeAnchors(anchors.value, payload.shot, assetCharacters.value),
+      anchors: mergeAnchors(projectAnchors.value, payload.shot, assetCharacters.value),
     })
     refineCandidate.value = {
       before: { ...payload.shot },
@@ -117,8 +141,28 @@ async function refineShot(payload: { shot: Shot; instruction: string }) {
     refiningId.value = null
   }
 }
-function addAnchor() { const value = window.prompt('输入角色视觉锚点'); if (value?.trim()) anchors.value.push(value.trim()) }
-function addShot() { const previous = shots.value[shots.value.length - 1]; shots.value.push({ ...previous, id: Date.now(), title: '新镜头：点击此处开始创作', description: '为这个镜头补充核心剧情与画面描述……', prompt: `${anchors.value.join(', ')}, 新镜头画面描述，电影级光影，细腻质感。`, runwayPrompt: `Cinematic shot, ${anchors.value.join(', ')}, describe the new scene, cinematic lighting.`, edit: '' }) }
+function toggleProjectCharacter(id: number) {
+  projectCharacterIds.value = projectCharacterIds.value.includes(id)
+    ? projectCharacterIds.value.filter((item) => item !== id)
+    : [...projectCharacterIds.value, id]
+}
+
+function addExtra() {
+  const value = window.prompt('添加项目补充词（画风 / 镜头语言等）')
+  const text = value?.trim()
+  if (!text) return
+  if (projectAnchors.value.includes(text)) {
+    notify('这个锚点已经在列表里了')
+    return
+  }
+  extras.value = [...extras.value, text]
+}
+
+function removeExtra(text: string) {
+  extras.value = extras.value.filter((item) => item !== text)
+}
+
+function addShot() { const previous = shots.value[shots.value.length - 1]; shots.value.push({ ...previous, id: Date.now(), title: '新镜头：点击此处开始创作', description: '为这个镜头补充核心剧情与画面描述……', prompt: `${projectAnchors.value.join(', ')}, 新镜头画面描述，电影级光影，细腻质感。`, runwayPrompt: `Cinematic shot, ${projectAnchors.value.join(', ')}, describe the new scene, cinematic lighting.`, edit: '' }) }
 
 function removeShot(shot: Shot) {
   const index = shots.value.findIndex((item) => item.id === shot.id)
@@ -163,11 +207,11 @@ function applyBinding(ids: number[]) {
   notify(ids.length ? `已绑定 ${ids.length} 个角色` : '已解除全部角色绑定')
 }
 
-/** 把绑定角色的锚点补到提示词开头（已出现的不重复加）。 */
-function injectAnchors(shot: Shot) {
-  const tokens = mergeAnchors([], shot, assetCharacters.value)
+/** 把缺失的锚点补到提示词开头（项目锚点 + 该镜绑定角色的锚点）。 */
+function injectMissing(shot: Shot) {
+  const tokens = mergeAnchors(projectAnchors.value, shot, assetCharacters.value)
   if (!tokens.length) {
-    notify('这个镜头还没有绑定角色')
+    notify('还没有可注入的锚点：先在左侧选择角色')
     return
   }
   const haystack = `${shot.prompt}\n${shot.runwayPrompt}`.toLowerCase()
@@ -179,7 +223,7 @@ function injectAnchors(shot: Shot) {
   const prefix = missing.join(', ')
   shot.prompt = `${prefix}, ${shot.prompt}`.trim()
   shot.runwayPrompt = `${prefix}, ${shot.runwayPrompt}`.trim()
-  notify(`已注入 ${missing.length} 个锚点`)
+  notify(`已补齐 ${missing.length} 个锚点`)
 }
 
 // ---- A2：撤销 / 重做 ----
@@ -308,7 +352,7 @@ async function confirmPlan() {
           const data = await api.post<{ shot: Shot }>('/api/v1/storyboard/shot', {
             idea: idea.value,
             style: style.value,
-            anchors: anchors.value,
+            anchors: projectAnchors.value,
             model: model.value,
             plan: current,
             index: item.index,
@@ -495,8 +539,13 @@ type StoryboardDoc = {
   shots: Shot[]
   style: string
   model: string
-  anchors: string[]
+  /** 项目级角色（锚点由角色资产派生） */
+  character_ids: number[]
+  /** 项目补充词（画风 / 镜头语言） */
+  extras: string[]
   plan?: ShotPlan | null
+  /** 旧版本字段：只在读取历史项目时兼容，不再写入 */
+  anchors?: string[]
 }
 
 const projectId = ref<number | null>(null)
@@ -513,7 +562,8 @@ function storyboardDoc(): StoryboardDoc {
     shots: shots.value,
     style: style.value,
     model: model.value,
-    anchors: anchors.value,
+    character_ids: projectCharacterIds.value,
+    extras: extras.value,
     plan: plan.value,
   }
 }
@@ -523,7 +573,20 @@ function applyStoryboard(doc: Partial<StoryboardDoc> | undefined) {
   if (Array.isArray(doc.shots)) shots.value = doc.shots as Shot[]
   if (typeof doc.style === 'string') style.value = doc.style
   if (typeof doc.model === 'string') model.value = doc.model
-  if (Array.isArray(doc.anchors)) anchors.value = doc.anchors as string[]
+
+  projectCharacterIds.value = Array.isArray(doc.character_ids)
+    ? (doc.character_ids as number[])
+    : []
+  if (Array.isArray(doc.extras)) {
+    extras.value = doc.extras as string[]
+  } else if (Array.isArray(doc.anchors)) {
+    // 老项目没有 extras：把原来的自由锚点降级成"项目补充词"，
+    // 提示词里的注入行为不变，用户再逐步改成按角色选择。
+    extras.value = doc.anchors as string[]
+  } else {
+    extras.value = []
+  }
+
   // 计划也随项目保存，刷新后可以继续展开未完成的镜头。
   plan.value = (doc.plan as ShotPlan | null | undefined) ?? null
   expandProgress.value = {}
@@ -565,7 +628,13 @@ async function createProject() {
   try {
     const data = await api.post<{ id: number }>('/api/v1/projects', {
       name: '未命名项目',
-      storyboard: { shots: [], style: style.value, model: model.value, anchors: anchors.value },
+      storyboard: {
+        shots: [],
+        style: style.value,
+        model: model.value,
+        character_ids: projectCharacterIds.value,
+        extras: extras.value,
+      },
     })
     await refreshProjects()
     await openProject(data.id)
@@ -820,7 +889,7 @@ onMounted(async () => {
   if (isAuthenticated.value) await ensureAssetsLoaded()
 })
 
-watch([project, style, model, anchors, shots, plan], scheduleSave, { deep: true })
+watch([project, style, model, projectCharacterIds, extras, shots, plan], scheduleSave, { deep: true })
 
 watch(user, async (current, previous) => {
   if (current && !previous) {
@@ -859,7 +928,7 @@ onBeforeUnmount(() => {
         <div class="mode-switch"><button :class="{ active: mode === 'forward' }" @click="mode = 'forward'"><Sparkles :size="14" />正向生成</button><button :class="{ active: mode === 'reverse' }" @click="mode = 'reverse'"><ScanLine :size="14" />逆向拆解</button></div>
         <template v-if="mode === 'forward'"><div class="field-label"><span>剧情梗概</span><span class="muted">灵感由此开始</span></div><textarea v-model="idea" class="idea-input" rows="5"></textarea><div class="field-label style-heading"><span>二创风格</span><span class="muted">选择一种叙事基调</span></div><div class="style-grid"><button v-for="item in styles" :key="item" :class="{ chosen: style === item }" @click="style = item">{{ item }}</button></div></template>
         <template v-else><div class="field-label"><span>参考素材</span><span class="muted">5–15 秒为佳</span></div><input ref="fileInput" class="hidden-file" type="file" accept="video/*,image/*" @change="onFileChange" /><div class="upload-box" role="button" tabindex="0" @click="fileInput?.click()" @keydown.enter="fileInput?.click()" @dragover.prevent @drop.prevent="onDrop"><Upload :size="21" /><b>拖拽视频或漫画切片至此</b><span>支持 MP4、MOV、PNG、JPG</span><template v-if="selectedFile"><strong>{{ selectedFile.name }}</strong><span>{{ formatSize(selectedFile.size) }}</span></template></div><button class="generate-btn mt-4" :disabled="loading" @click="reverse"><LoaderCircle v-if="loading" class="spin" :size="16" /><ScanLine v-else :size="16" />{{ loading ? '正在解析视听语言…' : '一键解析视听语言' }}<ArrowRight :size="15" /></button></template>
-        <section class="anchor-card"><div class="anchor-head"><span class="anchor-symbol"><LockKeyhole :size="15" /></span><div><b>角色一致性锚点</b><small>CHARACTER ANCHORS</small></div><button class="mini-add" @click="addAnchor"><Plus :size="15" /></button></div><p class="anchor-name">天命人</p><div class="anchor-tags"><button v-for="tag in anchors" :key="tag" class="anchor-tag" @click="anchors = anchors.filter(x => x !== tag)">{{ tag }} <X :size="10" /></button></div><p class="anchor-note">已锁定 · 将应用至全部镜头</p></section><button class="generate-btn" :disabled="loading" @click="generate"><WandSparkles :size="16" />生成分镜脚本<ArrowRight :size="15" /></button><div class="sidebar-footer">AI 创作引擎已就绪 <span>v1.2.0</span></div>
+        <section class="anchor-card"><div class="anchor-head"><span class="anchor-symbol"><LockKeyhole :size="15" /></span><div><b>角色一致性锚点</b><small>CHARACTER ANCHORS</small></div><button class="mini-add" title="添加项目补充词" @click="addExtra"><Plus :size="15" /></button></div><p class="anchor-label">项目角色 <span class="muted">锚点由角色资产派生</span></p><div class="anchor-tags"><button v-for="character in assetCharacters" :key="character.id" class="anchor-char" :class="{ chosen: projectCharacterIds.includes(character.id) }" @click="toggleProjectCharacter(character.id)">{{ character.name }}</button><span v-if="!assetCharacters.length" class="anchor-note">右侧资产库还没有角色</span></div><template v-if="anchorStats.length"><p class="anchor-label">锚点命中</p><ul class="anchor-stats"><li v-for="stat in anchorStats" :key="stat.text" :class="{ miss: stat.hits < stat.total }"><span class="anchor-text">{{ stat.text }}</span><span class="anchor-hit">{{ stat.hits }}/{{ stat.total }}</span></li></ul></template><template v-if="extras.length"><p class="anchor-label">项目补充词</p><div class="anchor-tags"><button v-for="extra in extras" :key="extra" class="anchor-tag" @click="removeExtra(extra)">{{ extra }} <X :size="10" /></button></div></template><p class="anchor-note">生成 / 展开 / 微调都会注入；缺失只在卡片上提示，不自动改写</p></section><button class="generate-btn" :disabled="loading" @click="generate"><WandSparkles :size="16" />生成分镜脚本<ArrowRight :size="15" /></button><div class="sidebar-footer">AI 创作引擎已就绪 <span>v1.2.0</span></div>
       </aside>
       <main class="canvas"><div class="canvas-top"><div><div class="breadcrumb">项目 <span>/</span> {{ project }}</div><div class="canvas-title"><h1>故事板</h1><span class="shot-count">{{ shots.length }} SHOTS</span></div></div><div class="collab-pill"><span></span>人机协同 · 等待你的灵感</div></div>
         <div class="board-toolbar"><div class="toolbar-label"><Film :size="14" /><span>镜头序列</span><span class="toolbar-divider"></span><span class="subtle">{{ modelHint }}</span></div><div class="view-switch"><button :class="{ selected: viewMode === 'grid' }" @click="viewMode = 'grid'"><Layers3 :size="13" />卡片</button><button :class="{ selected: viewMode === 'list' }" @click="viewMode = 'list'"><span>☷</span>列表</button></div></div>
@@ -867,7 +936,7 @@ onBeforeUnmount(() => {
         <template v-else>
   <PlanPanel v-if="plan" :plan="plan" :busy="expanding" :progress="expandProgress" @confirm="confirmPlan" @cancel="cancelPlan" @update="updatePlan" />
   <template v-else>
-    <ShotBoard :shots="shots" :model="model" :anchors="anchors" :view-mode="viewMode" :refining-id="refiningId" :characters="assetCharacters" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @remove="removeShot" @bind="openBinding" @inject-anchors="injectAnchors" @move="moveShot" @add="addShot" />
+    <ShotBoard :shots="shots" :model="model" :anchors="projectAnchors" :view-mode="viewMode" :refining-id="refiningId" :characters="assetCharacters" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @remove="removeShot" @bind="openBinding" @inject-missing="injectMissing" @move="moveShot" @add="addShot" />
     <StoryboardStrip :shots="shots" :active-index="activeShotIndex" @select="scrollToShot" />
   </template>
 </template>
@@ -1060,4 +1129,22 @@ onBeforeUnmount(() => {
 .binding-body small{font-size:9px;color:#64748b}
 .binding-body em{font-style:normal;font-size:9px;color:#5b6779;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .binding-warn{color:#fbbf24;flex:none}
+/* ---- 锚点：角色派生 + 命中统计 ---- */
+.anchor-label{display:flex;align-items:center;gap:6px;margin:12px 0 6px;color:#9aa6b6;font-size:9px;letter-spacing:.3px}
+.anchor-label .muted{margin-left:auto}
+.anchor-char{padding:4px 9px;border:1px solid #263246;border-radius:999px;background:#0b1220;color:#7b8798;font-size:9px}
+.anchor-char:hover{border-color:#f59e0b66;color:#cbd5e1}
+.anchor-char.chosen{border-color:#f59e0b;background:#2a1f0a;color:#fbbf24}
+.anchor-stats{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.anchor-stats li{display:flex;align-items:center;gap:6px;font-size:9px;color:#8fa0b8}
+.anchor-stats li .anchor-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'DM Mono',monospace}
+.anchor-stats li .anchor-hit{padding:1px 5px;border:1px solid #263246;border-radius:4px;color:#7b8798;font-size:8px}
+.anchor-stats li.miss .anchor-text{color:#fbbf24}
+.anchor-stats li.miss .anchor-hit{border-color:#7f5f18;color:#fbbf24}
+.anchor-status{display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-width:0}
+.anchor-pill{display:inline-flex;align-items:center;gap:2px;padding:2px 6px;border:1px solid #263246;border-radius:999px;background:#0b1220;color:#8fa0b8;font:8px 'DM Mono',monospace}
+.anchor-pill.miss{border-color:#7f5f18;background:#2a1f0a;color:#fbbf24}
+.prompt-foot-right{display:flex;align-items:center;gap:6px;flex:none}
+.anchor-fix{padding:2px 7px;border:1px solid #7f5f18;border-radius:999px;background:#2a1f0a;color:#fbbf24;font-size:8px}
+.anchor-fix:hover{background:#3d2c0d}
 </style>

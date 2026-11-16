@@ -17,7 +17,6 @@ import {
   Send,
   Sparkles,
   Trash2,
-  Wand2,
   X,
 } from 'lucide-vue-next'
 import { paletteBackground, paletteLabel } from '../lib/palettes'
@@ -42,7 +41,7 @@ const emit = defineEmits<{
   removeReference: [shot: Shot]
   remove: [shot: Shot]
   bind: [shot: Shot]
-  injectAnchors: [shot: Shot]
+  injectMissing: [shot: Shot]
   moveUp: []
   moveDown: []
 }>()
@@ -53,7 +52,16 @@ const promptText = computed(() => activePrompt(props.shot, props.model))
 const hasReference = computed(() => Boolean(props.shot.reference_image_id))
 const referenceUrl = computed(() => `/api/v1/uploads/${props.shot.reference_image_id}`)
 const chips = computed(() => props.bindings ?? [])
-const missingCount = computed(() => chips.value.filter((chip) => chip.missing).length)
+
+/** 每个锚点是否真的出现在这条提示词里（中英都看）。 */
+const anchorHits = computed(() => {
+  const haystack = `${props.shot.prompt}\n${props.shot.runwayPrompt}`.toLowerCase()
+  return props.anchors.map((text) => ({
+    text,
+    hit: haystack.includes(text.toLowerCase()),
+  }))
+})
+const missingAnchors = computed(() => anchorHits.value.filter((item) => !item.hit))
 
 function submitRefine() {
   const instruction = props.shot.edit.trim()
@@ -144,15 +152,6 @@ function submitRefine() {
         <button class="binding-add" type="button" @click="emit('bind', shot)">
           <Link2 :size="10" />{{ chips.length ? '调整角色' : '绑定角色' }}
         </button>
-        <button
-          v-if="chips.length"
-          class="binding-inject"
-          type="button"
-          :title="missingCount ? `${missingCount} 个角色缺锚点，点击补齐` : '检查并补齐锚点'"
-          @click="emit('injectAnchors', shot)"
-        >
-          <Wand2 :size="10" />注入锚点
-        </button>
       </div>
 
       <textarea v-model="shot.description" rows="2" aria-label="画面描述"></textarea>
@@ -167,11 +166,32 @@ function submitRefine() {
       </div>
       <div class="prompt-text">{{ promptText || '尚未生成提示词' }}</div>
       <div class="prompt-foot">
-        <span>
-          <b v-if="anchors.length">{{ anchors.join(' · ') }}</b>
+        <span class="anchor-status">
+          <template v-if="anchorHits.length">
+            <span
+              v-for="item in anchorHits"
+              :key="item.text"
+              class="anchor-pill"
+              :class="{ miss: !item.hit }"
+              :title="item.hit ? '已在提示词中出现' : '这条提示词里没有这个锚点'"
+            >
+              <AlertTriangle v-if="!item.hit" :size="8" />{{ item.text }}
+            </span>
+          </template>
           <b v-else>未设置角色锚点</b>
         </span>
-        <span>{{ promptText.length }} 字符 · {{ isRunway(model) ? '英文' : '中文' }}</span>
+        <span class="prompt-foot-right">
+          <button
+            v-if="missingAnchors.length"
+            class="anchor-fix"
+            type="button"
+            :title="`把缺失的 ${missingAnchors.length} 个锚点补到提示词开头`"
+            @click="emit('injectMissing', shot)"
+          >
+            补齐 {{ missingAnchors.length }} 个
+          </button>
+          <span>{{ promptText.length }} 字符 · {{ isRunway(model) ? '英文' : '中文' }}</span>
+        </span>
       </div>
     </div>
 
