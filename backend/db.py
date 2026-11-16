@@ -116,6 +116,20 @@ CREATE TABLE IF NOT EXISTS character_tags (
 
 -- 反查"哪些角色用了这个标签"，删除标签与引用提示都依赖它。
 CREATE INDEX IF NOT EXISTS idx_character_tags_tag ON character_tags(tag_id);
+
+CREATE TABLE IF NOT EXISTS uploads (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sha256     TEXT    NOT NULL,
+    mime       TEXT    NOT NULL,
+    bytes      INTEGER NOT NULL,
+    width      INTEGER,
+    height     INTEGER,
+    created_at TEXT    NOT NULL
+);
+
+-- 同一用户重复上传同一张图只存一份
+CREATE UNIQUE INDEX IF NOT EXISTS idx_uploads_user_hash ON uploads(user_id, sha256);
 """
 
 

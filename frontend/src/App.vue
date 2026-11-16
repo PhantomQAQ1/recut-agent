@@ -5,8 +5,15 @@ import UserMenu from './components/UserMenu.vue'
 import CharacterCard from './components/CharacterCard.vue'
 import CharacterEditor from './components/CharacterEditor.vue'
 import TagPanel from './components/TagPanel.vue'
+import ShotBoard from './components/ShotBoard.vue'
+import StoryboardStrip from './components/StoryboardStrip.vue'
+import PlanPanel from './components/PlanPanel.vue'
+import RefineDialog from './components/RefineDialog.vue'
+import ExportDialog from './components/ExportDialog.vue'
 import { api } from './api/client'
 import { useAuth } from './composables/useAuth'
+import { downloadBlob, downloadText, safeFilename, toCsv, toMarkdown } from './lib/export'
+import type { Shot, ShotPlan } from './lib/types'
 import {
   useAssets,
   type AssetTag,
@@ -14,9 +21,8 @@ import {
   type TagCategory,
   type Tone,
 } from './composables/useAssets'
-import { Aperture, ArrowDownToLine, ArrowRight, AudioLines, Check, ChevronDown, Clapperboard, Copy, Film, Focus, Layers3, LoaderCircle, LockKeyhole, MessageSquareText, MoreHorizontal, Plus, ScanLine, Send, SlidersHorizontal, Sparkles, Upload, WandSparkles, X } from 'lucide-vue-next'
+import { Aperture, ArrowDownToLine, ArrowRight, AudioLines, Check, ChevronDown, Clapperboard, Film, Layers3, LoaderCircle, LockKeyhole, MoreHorizontal, Plus, ScanLine, SlidersHorizontal, Sparkles, Upload, WandSparkles, X } from 'lucide-vue-next'
 
-type Shot = { id: number; duration: string; scale: string; lens: string; move: string; title: string; description: string; prompt: string; runwayPrompt: string; edit: string; palette: string; scene: string }
 const models = ['即梦 Jimeng', '可灵 Kling', 'Runway Gen-3']
 const model = ref(models[0])
 const mode = ref<'forward' | 'reverse'>('forward')
@@ -44,19 +50,20 @@ async function generate() {
   if (loading.value || !isAuthenticated.value) return
   loading.value = true
   try {
-    const data = await api.post<{ shots?: Shot[] }>('/api/v1/storyboard/generate', {
+    // B4 阶段一：先出镜头计划，用户确认后再逐镜展开提示词。
+    const data = await api.post<{ plan: ShotPlan }>('/api/v1/storyboard/plan', {
       idea: idea.value,
       style: style.value,
       anchors: anchors.value,
       model: model.value,
     })
-    const next = data.shots ?? []
-    if (!next.length) throw new Error('模型没有返回镜头，请调整梗概后重试')
-    shots.value = next
-    notify(`已生成 ${next.length} 个镜头`)
+    if (!data.plan?.shots?.length) throw new Error('模型没有返回镜头计划')
+    plan.value = data.plan
+    expandedShots.value = {}
+    expandProgress.value = {}
+    notify(`已生成 ${data.plan.shots.length} 镜的计划，确认后展开提示词`)
   } catch (error) {
-    // 失败时保留当前故事板（含演示分镜），只把原因提示给用户。
-    notify(`生成失败：${error instanceof Error ? error.message : '未知错误'}`)
+    notify(`生成计划失败：${error instanceof Error ? error.message : '未知错误'}`)
   } finally {
     loading.value = false
   }
@@ -84,9 +91,267 @@ async function reverse() {
     loading.value = false
   }
 }
-function refineShot(shot: Shot) { const request = shot.edit.trim(); if (!request) return; shot.description = `${shot.description} 画面微调：${request}。`; shot.prompt = `${shot.prompt} 画面调整：${request}。`; shot.runwayPrompt = `${shot.runwayPrompt} Visual refinement: ${request}.`; shot.edit = ''; notify(`Shot ${String(shot.id).padStart(2, '0')} 已更新`) }
+async function refineShot(payload: { shot: Shot; instruction: string }) {
+  if (refiningId.value !== null || !isAuthenticated.value) return
+  refiningId.value = payload.shot.id
+  try {
+    // B1：真正调用模型，返回候选后由用户确认，不直接覆盖。
+    const data = await api.post<{ shot: Shot }>('/api/v1/storyboard/refine', {
+      shot: payload.shot,
+      instruction: payload.instruction,
+      model: model.value,
+      anchors: anchors.value,
+    })
+    refineCandidate.value = {
+      before: { ...payload.shot },
+      after: data.shot,
+      instruction: payload.instruction,
+    }
+  } catch (error) {
+    notify(`微调失败：${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    refiningId.value = null
+  }
+}
 function addAnchor() { const value = window.prompt('输入角色视觉锚点'); if (value?.trim()) anchors.value.push(value.trim()) }
 function addShot() { const previous = shots.value[shots.value.length - 1]; shots.value.push({ ...previous, id: Date.now(), title: '新镜头：点击此处开始创作', description: '为这个镜头补充核心剧情与画面描述……', prompt: `${anchors.value.join(', ')}, 新镜头画面描述，电影级光影，细腻质感。`, runwayPrompt: `Cinematic shot, ${anchors.value.join(', ')}, describe the new scene, cinematic lighting.`, edit: '' }) }
+// --------------------------------------------------------------------------- //
+// 故事板：镜头计划（B4）、单镜微调（B1）、参考首帧（C1）、导出（E1/E3）
+// --------------------------------------------------------------------------- //
+
+const plan = ref<ShotPlan | null>(null)
+/** 本次计划已展开的镜头，按 plan index 存放；避免和已有 shots 的 id 混淆。 */
+const expandedShots = ref<Record<number, Shot>>({})
+const expandProgress = ref<Record<number, 'pending' | 'done' | 'error'>>({})
+const expanding = ref(false)
+const refiningId = ref<number | null>(null)
+const refineCandidate = ref<{ before: Shot; after: Shot; instruction: string } | null>(null)
+const exportOpen = ref(false)
+const exporting = ref(false)
+const activeShotIndex = ref<number | null>(null)
+const uploadTarget = ref<Shot | null>(null)
+const referenceInput = ref<HTMLInputElement | null>(null)
+
+function updatePlan(next: ShotPlan) {
+  plan.value = next
+}
+
+function cancelPlan() {
+  if (expanding.value) return
+  plan.value = null
+  expandedShots.value = {}
+  expandProgress.value = {}
+}
+
+function refreshFromExpansion(current: ShotPlan) {
+  const ordered = current.shots
+    .map((item) => expandedShots.value[item.index])
+    .filter((shot): shot is Shot => Boolean(shot))
+  if (ordered.length) shots.value = ordered
+}
+
+/** B4 阶段二：逐镜并发展开；已完成的镜头不会重复请求，失败可单独重试。 */
+async function confirmPlan() {
+  const current = plan.value
+  if (!current || expanding.value || !isAuthenticated.value) return
+  expanding.value = true
+  try {
+    const pending = current.shots.filter((item) => !expandedShots.value[item.index])
+    if (!pending.length) {
+      plan.value = null
+      return
+    }
+
+    expandProgress.value = {
+      ...expandProgress.value,
+      ...Object.fromEntries(pending.map((item) => [item.index, 'pending' as const])),
+    }
+
+    const queue = [...pending]
+    const worker = async () => {
+      while (queue.length) {
+        const item = queue.shift()
+        if (!item) return
+        try {
+          const data = await api.post<{ shot: Shot }>('/api/v1/storyboard/shot', {
+            idea: idea.value,
+            style: style.value,
+            anchors: anchors.value,
+            model: model.value,
+            plan: current,
+            index: item.index,
+          })
+          expandedShots.value = { ...expandedShots.value, [item.index]: data.shot }
+          expandProgress.value = { ...expandProgress.value, [item.index]: 'done' }
+          refreshFromExpansion(current)
+        } catch {
+          expandProgress.value = { ...expandProgress.value, [item.index]: 'error' }
+        }
+      }
+    }
+
+    // 并发 3 路：够快，也不会把模型服务打满
+    await Promise.all(Array.from({ length: Math.min(3, pending.length) }, worker))
+
+    const failed = current.shots.filter((item) => !expandedShots.value[item.index])
+    if (failed.length) {
+      notify(`${failed.length} 镜展开失败，可再点一次「确认并展开」只重试失败的镜头`)
+    } else {
+      refreshFromExpansion(current)
+      plan.value = null
+      expandedShots.value = {}
+      expandProgress.value = {}
+      notify(`已展开 ${current.shots.length} 个镜头`)
+    }
+  } finally {
+    expanding.value = false
+  }
+}
+
+function applyRefine() {
+  const candidate = refineCandidate.value
+  if (!candidate) return
+  const target = shots.value.find((shot) => shot.id === candidate.after.id)
+  if (target) {
+    target.title = candidate.after.title
+    target.description = candidate.after.description
+    target.prompt = candidate.after.prompt
+    target.runwayPrompt = candidate.after.runwayPrompt
+    target.duration = candidate.after.duration
+    target.scale = candidate.after.scale
+    target.lens = candidate.after.lens
+    target.move = candidate.after.move
+    target.palette = candidate.after.palette
+    target.scene = candidate.after.scene
+    target.edit = ''
+  }
+  refineCandidate.value = null
+  notify('已采用这次修改')
+}
+
+function cancelRefine() {
+  refineCandidate.value = null
+}
+
+// ---- C1：参考首帧 ----
+
+function requestUpload(shot: Shot) {
+  uploadTarget.value = shot
+  referenceInput.value?.click()
+}
+
+/** 大图先在本地压到 1280px，省流量也避免撞上后端 5MB 限制。 */
+async function compressImage(file: File, maxEdge = 1280): Promise<File> {
+  if (file.size <= 400 * 1024) return file
+  try {
+    const bitmap = await createImageBitmap(file)
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    const context = canvas.getContext('2d')
+    if (!context) return file
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.85),
+    )
+    if (!blob) return file
+    return new File([blob], `${file.name.replace(/\.[^.]+$/, '')}.jpg`, { type: 'image/jpeg' })
+  } catch {
+    return file
+  }
+}
+
+async function onReferenceSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  const target = uploadTarget.value
+  input.value = ''
+  uploadTarget.value = null
+  if (!file || !target) return
+  try {
+    const prepared = await compressImage(file)
+    const form = new FormData()
+    form.append('file', prepared, prepared.name)
+    const data = await api.upload<{ id: number }>('/api/v1/uploads', form)
+    target.reference_image_id = data.id
+    notify('已设置参考首帧')
+  } catch (error) {
+    notify(`首帧上传失败：${error instanceof Error ? error.message : '未知错误'}`)
+  }
+}
+
+function removeReference(shot: Shot) {
+  shot.reference_image_id = null
+  notify('已移除参考首帧')
+}
+
+// ---- E1 / E3：导出 ----
+
+function openExport() {
+  if (!shots.value.length) {
+    notify('还没有镜头可以导出')
+    return
+  }
+  exportOpen.value = true
+}
+
+async function runExport(format: 'md' | 'csv' | 'jianying') {
+  exporting.value = true
+  try {
+    const base = safeFilename(project.value)
+    if (format === 'md') {
+      downloadText(
+        `${base}.md`,
+        toMarkdown(project.value, shots.value, model.value),
+        'text/markdown;charset=utf-8',
+      )
+    } else if (format === 'csv') {
+      downloadText(`${base}.csv`, toCsv(shots.value), 'text/csv;charset=utf-8')
+    } else {
+      if (projectId.value === null) throw new Error('项目尚未保存，请稍后再试')
+      const response = await fetch(`/api/v1/projects/${projectId.value}/export/jianying`, {
+        credentials: 'include',
+      })
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+        throw new Error(detail.detail ?? `HTTP ${response.status}`)
+      }
+      downloadBlob(`${base}-jianying-draft.zip`, await response.blob())
+    }
+    exportOpen.value = false
+    notify('导出已开始')
+  } catch (error) {
+    notify(`导出失败：${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    exporting.value = false
+  }
+}
+
+// ---- C3：缩略导航 ----
+
+function scrollToShot(index: number) {
+  activeShotIndex.value = index
+  document
+    .getElementById(`shot-card-${index}`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+/** 滚动时高亮离视口顶部最近的卡片（缩略条跟随）。 */
+function onViewportScroll() {
+  if (!shots.value.length) return
+  let bestIndex: number | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  document.querySelectorAll<HTMLElement>('[data-shot-index]').forEach((element) => {
+    const distance = Math.abs(element.getBoundingClientRect().top - 140)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestIndex = Number(element.dataset.shotIndex)
+    }
+  })
+  if (bestIndex !== null) activeShotIndex.value = bestIndex
+}
+
 // --------------------------------------------------------------------------- //
 // 认证 + 项目持久化
 // --------------------------------------------------------------------------- //
@@ -94,7 +359,13 @@ function addShot() { const previous = shots.value[shots.value.length - 1]; shots
 const { user, isAuthenticated, bootstrapping, bootstrap } = useAuth()
 
 type ProjectSummary = { id: number; name: string; updated_at: string }
-type StoryboardDoc = { shots: Shot[]; style: string; model: string; anchors: string[] }
+type StoryboardDoc = {
+  shots: Shot[]
+  style: string
+  model: string
+  anchors: string[]
+  plan?: ShotPlan | null
+}
 
 const projectId = ref<number | null>(null)
 const projectList = ref<ProjectSummary[]>([])
@@ -106,7 +377,13 @@ let hydrating = false
 let saveTimer: number | undefined
 
 function storyboardDoc(): StoryboardDoc {
-  return { shots: shots.value, style: style.value, model: model.value, anchors: anchors.value }
+  return {
+    shots: shots.value,
+    style: style.value,
+    model: model.value,
+    anchors: anchors.value,
+    plan: plan.value,
+  }
 }
 
 function applyStoryboard(doc: Partial<StoryboardDoc> | undefined) {
@@ -115,6 +392,9 @@ function applyStoryboard(doc: Partial<StoryboardDoc> | undefined) {
   if (typeof doc.style === 'string') style.value = doc.style
   if (typeof doc.model === 'string') model.value = doc.model
   if (Array.isArray(doc.anchors)) anchors.value = doc.anchors as string[]
+  // 计划也随项目保存，刷新后可以继续展开未完成的镜头。
+  plan.value = (doc.plan as ShotPlan | null | undefined) ?? null
+  expandProgress.value = {}
 }
 
 async function refreshProjects() {
@@ -394,6 +674,7 @@ function toggleTagFilter(tagId: number) {
 }
 
 onMounted(async () => {
+  window.addEventListener('scroll', onViewportScroll, { passive: true })
   await bootstrap()
   try {
     await syncProjects()
@@ -404,7 +685,7 @@ onMounted(async () => {
   if (isAuthenticated.value) await ensureAssetsLoaded()
 })
 
-watch([project, style, model, anchors, shots], scheduleSave, { deep: true })
+watch([project, style, model, anchors, shots, plan], scheduleSave, { deep: true })
 
 watch(user, async (current, previous) => {
   if (current && !previous) {
@@ -424,7 +705,10 @@ watch(user, async (current, previous) => {
   }
 })
 
-onBeforeUnmount(() => window.clearTimeout(saveTimer))
+onBeforeUnmount(() => {
+  window.clearTimeout(saveTimer)
+  window.removeEventListener('scroll', onViewportScroll)
+})
 
 </script>
 
@@ -432,7 +716,7 @@ onBeforeUnmount(() => window.clearTimeout(saveTimer))
   <div class="app-shell min-h-screen bg-slate-950 text-slate-100">
     <header class="topbar flex h-[66px] items-center justify-between border-b border-slate-800/80 px-7">
       <div class="flex min-w-0 items-center gap-7"><a class="brand flex items-center gap-2.5" href="#"><span class="brand-icon"><Clapperboard :size="19" /></span><span>ReCut <i>Agent</i></span></a><div class="h-6 w-px bg-slate-800"></div><div class="project-name flex items-center gap-2"><span>PROJECT</span><input v-model="project" aria-label="项目标题" :disabled="!isAuthenticated" /><button class="project-toggle" type="button" aria-label="切换项目" @click="projectMenuOpen = !projectMenuOpen"><ChevronDown :size="14" /></button><div v-if="projectMenuOpen" class="project-menu"><button v-for="item in projectList" :key="item.id" type="button" :class="{ current: item.id === projectId }" @click="switchProject(item.id)">{{ item.name }}</button><button class="new-project" type="button" @click="createProject">+ 新建项目</button></div></div></div>
-      <div class="flex items-center gap-3"><span class="hidden text-[11px] text-slate-500 md:block">生成模型</span><div class="select-wrap"><select v-model="model" aria-label="选择生成模型"><option v-for="item in models" :key="item">{{ item }}</option></select><ChevronDown :size="14" /></div><button class="export-btn" @click="notify('剪映草稿已准备导出')"><ArrowDownToLine :size="15" />导出剪映草稿</button><UserMenu v-if="isAuthenticated" /></div>
+      <div class="flex items-center gap-3"><span class="hidden text-[11px] text-slate-500 md:block">生成模型</span><div class="select-wrap"><select v-model="model" aria-label="选择生成模型"><option v-for="item in models" :key="item">{{ item }}</option></select><ChevronDown :size="14" /></div><button class="export-btn" @click="openExport"><ArrowDownToLine :size="15" />导出剪映草稿</button><UserMenu v-if="isAuthenticated" /></div>
     </header>
     <div class="workspace">
       <aside class="left-panel"><div class="panel-heading"><div><p class="eyebrow">WORKSPACE</p><h2>创作工作台</h2></div><button class="icon-button"><SlidersHorizontal :size="16" /></button></div>
@@ -444,10 +728,17 @@ onBeforeUnmount(() => window.clearTimeout(saveTimer))
       <main class="canvas"><div class="canvas-top"><div><div class="breadcrumb">项目 <span>/</span> {{ project }}</div><div class="canvas-title"><h1>故事板</h1><span class="shot-count">{{ shots.length }} SHOTS</span></div></div><div class="collab-pill"><span></span>人机协同 · 等待你的灵感</div></div>
         <div class="board-toolbar"><div class="toolbar-label"><Film :size="14" /><span>镜头序列</span><span class="toolbar-divider"></span><span class="subtle">{{ modelHint }}</span></div><div class="view-switch"><button :class="{ selected: viewMode === 'grid' }" @click="viewMode = 'grid'"><Layers3 :size="13" />卡片</button><button :class="{ selected: viewMode === 'list' }" @click="viewMode = 'list'"><span>☷</span>列表</button></div></div>
         <div v-if="loading" class="skeleton-list"><div v-for="i in 3" :key="i" class="skeleton-card"><div class="skeleton-line w-1/3"></div><div class="skeleton-image"></div><div class="skeleton-line w-3/4"></div></div></div>
-        <div v-else :class="viewMode === 'grid' ? 'shot-list grid-cols-1 md:grid-cols-2' : 'shot-list list-mode flex-col'"><article v-for="(shot, index) in shots" :key="shot.id" class="shot-card"><div class="shot-top"><div class="shot-index"><span class="index-num">{{ String(index + 1).padStart(2, '0') }}</span><div><b>SHOT {{ String(index + 1).padStart(2, '0') }}</b><small>{{ shot.duration }} · {{ shot.scale }} · {{ shot.lens }}</small></div></div><span class="move-badge"><Focus :size="11" />{{ shot.move }}</span></div><div class="scene-art" :class="shot.palette"><div class="scene-glow"></div><div class="scene-figure"><i></i><span></span></div><div class="scene-caption">SCENE {{ String(index + 1).padStart(2, '0') }}</div></div><div class="shot-copy"><input v-model="shot.title" :aria-label="`镜头 ${index + 1} 标题`" /><textarea v-model="shot.description" rows="2" aria-label="画面描述"></textarea></div><div class="prompt-block"><div class="prompt-head"><span><Sparkles :size="12" /> AI PROMPT · {{ model }}</span><button class="copy-btn" @click="copyPrompt(shot)"><Copy :size="12" />一键复制</button></div><div class="prompt-text">{{ activePrompt(shot) }}</div><div class="prompt-foot"><span><b>{{ anchors.join(' · ') }}</b> 已应用角色锚点</span><span>{{ activePrompt(shot).length }} 字符</span></div></div><div class="tweak-row"><MessageSquareText :size="14" /><input v-model="shot.edit" placeholder="输入单镜微调要求，例如：改为赛博朋克霓虹灯" @keydown.enter="refineShot(shot)" /><button :disabled="!shot.edit.trim()" aria-label="发送镜头微调" @click="refineShot(shot)"><Send :size="14" /></button></div></article><button class="add-shot" @click="addShot"><Plus :size="15" />添加镜头</button></div><footer class="canvas-footer"><span>{{ saveLabel }}</span><span>所有更改均已同步 <Check :size="12" /></span></footer>
+        <template v-else>
+  <PlanPanel v-if="plan" :plan="plan" :busy="expanding" :progress="expandProgress" @confirm="confirmPlan" @cancel="cancelPlan" @update="updatePlan" />
+  <template v-else>
+    <ShotBoard :shots="shots" :model="model" :anchors="anchors" :view-mode="viewMode" :refining-id="refiningId" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @add="addShot" />
+    <StoryboardStrip :shots="shots" :active-index="activeShotIndex" @select="scrollToShot" />
+  </template>
+</template>
+<footer class="canvas-footer"><span>{{ saveLabel }}</span><span>所有更改均已同步 <Check :size="12" /></span></footer>
       </main>
       <aside class="right-panel"><div class="right-heading"><div><p class="eyebrow">CREATIVE ASSETS</p><h2>资产与灵感</h2></div><button class="icon-button"><MoreHorizontal :size="17" /></button></div><section class="asset-section"><div class="section-title"><div><span class="section-icon amber"><Aperture :size="14" /></span><b>角色资产库</b></div><button class="text-action" @click="openEditor(null)">新建 <ArrowRight :size="12" /></button></div><CharacterCard v-for="(character, index) in visibleCharacters" :key="character.id" :character="character" :index="index" @edit="openEditor(character)" @remove="removeCharacter(character)" @remove-tag="detachTag" @add-tag="openEditor(character)" /><p v-if="!visibleCharacters.length" class="asset-empty">{{ selectedTagId === null ? '还没有角色，点右上角「新建」' : '该标签下还没有角色' }}</p></section><TagPanel :tags="assetTags" :selected="selectedTagId" @select="toggleTagFilter" @rename="renameTag" @remove="removeTag" @create="createTagFromPanel" /><div class="insight-card"><AudioLines :size="15" /><div><span>DIRECTOR'S NOTE</span><p>镜头与音乐鼓点的情绪峰值重合，试试缩短时长，让转场更有力量。</p><button @click="notify('已应用导演建议')">应用建议 <ArrowRight :size="12" /></button></div></div></aside>
-    </div><CharacterEditor v-if="editorOpen" :character="editingCharacter" :tags="assetTags" :saving="savingCharacter" :error="editorError" :create-tag="createTagFromEditor" @close="closeEditor" @save="saveCharacter" /><LoginDialog v-if="!user && !bootstrapping" /><Transition><div v-if="toast" class="toast"><span><Check :size="14" /></span>{{ toast }}</div></Transition>
+    </div><CharacterEditor v-if="editorOpen" :character="editingCharacter" :tags="assetTags" :saving="savingCharacter" :error="editorError" :create-tag="createTagFromEditor" @close="closeEditor" @save="saveCharacter" /><RefineDialog v-if="refineCandidate" :before="refineCandidate.before" :after="refineCandidate.after" :instruction="refineCandidate.instruction" @apply="applyRefine" @cancel="cancelRefine" /><ExportDialog v-if="exportOpen" :shots="shots" :project-name="project" :model="model" :busy="exporting" @close="exportOpen = false" @export="runExport" /><input ref="referenceInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp" @change="onReferenceSelected" /><LoginDialog v-if="!user && !bootstrapping" /><Transition><div v-if="toast" class="toast"><span><Check :size="14" /></span>{{ toast }}</div></Transition>
   </div>
 </template>
 
@@ -542,4 +833,71 @@ onBeforeUnmount(() => window.clearTimeout(saveTimer))
 .tone-dot.tone-indigo{background:linear-gradient(145deg,#93c5fd,#1d4ed8)}
 .tone-dot.tone-neutral{background:linear-gradient(145deg,#94a3b8,#475569)}
 .tone-dot.active{border-color:#fbbf24;box-shadow:0 0 0 2px #f59e0b33}
+/* ---- 故事板卡片：场景层与首帧 ---- */
+.scene-layer{position:absolute;inset:0;pointer-events:none}
+.scene-layer svg{width:100%;height:100%;display:block}
+.scene-reference{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scene-actions{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.shot-card:hover .scene-actions,.scene-actions:focus-within{opacity:1}
+.scene-actions button{width:22px;height:22px;display:grid;place-items:center;border:1px solid #33415a;border-radius:6px;background:#0b1220cc;color:#cbd5e1}
+.scene-actions button:hover{border-color:#f59e0b88;color:#fbbf24}
+.shot-meta{display:flex;gap:6px;margin:6px 0 8px}
+.shot-meta span{padding:2px 6px;border:1px solid #1e293b;border-radius:4px;background:#0b1220;color:#8fa0b8;font:9px 'DM Mono';letter-spacing:.4px}
+/* ---- 镜头计划面板（B4） ---- */
+.plan-panel{border:1px solid #1b2739;border-radius:10px;background:#080e18;padding:14px 15px 12px;margin-bottom:14px}
+.plan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.plan-head h3{margin:3px 0 0;font-size:14px;color:#f8fafc}
+.plan-head-actions{display:flex;gap:8px;align-items:center}
+.plan-cancel{height:34px;padding:0 12px;flex:none}
+.plan-confirm{height:34px;padding:0 14px;min-width:150px}
+.plan-narrative{margin:10px 0 4px;color:#93a3b8;font-size:10px;line-height:1.6}
+.plan-error{margin:6px 0;color:#fda4af;font-size:10px}
+.plan-rows{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.plan-row{display:grid;grid-template-columns:26px 62px 96px 62px 132px 1fr 18px 24px;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid #131c2b}
+.plan-row.is-pending{opacity:.75}
+.plan-row.is-error{border-bottom-color:#7f1d1d}
+.plan-row select,.plan-row input{height:28px;padding:0 6px;border:1px solid #1e293b;border-radius:6px;background:#0a1120;color:#cbd5e1;font-size:10px;outline:none;min-width:0}
+.plan-row select:focus,.plan-row input:focus{border-color:#f59e0b88}
+.plan-index{color:#64748b;font:10px 'DM Mono'}
+.plan-state{display:grid;place-items:center;color:#fbbf24}
+.plan-row.is-error .plan-state{color:#f43f5e}
+.plan-remove{width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:#64748b}
+.plan-remove:hover{background:#1a2434;color:#fda4af}
+.plan-add{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border:1px dashed #33415a;border-radius:7px;background:transparent;color:#8fa0b8;font-size:10px}
+.plan-add:hover{border-color:#f59e0b88;color:#fbbf24}
+/* ---- 缩略导航条（C3，等宽，非时间轴） ---- */
+.board-strip{display:flex;gap:6px;overflow-x:auto;padding:10px 2px 4px;margin-top:10px;border-top:1px solid #131c2b}
+.strip-item{flex:0 0 84px;display:flex;flex-direction:column;gap:4px;padding:0;border:1px solid transparent;border-radius:7px;background:transparent}
+.strip-item.active{border-color:#f59e0b;background:#1a2434}
+.strip-thumb{display:block;width:100%;aspect-ratio:16/9;border-radius:5px;overflow:hidden;background-size:cover}
+.strip-thumb img{width:100%;height:100%;object-fit:cover}
+.strip-index{color:#7b8798;font:9px 'DM Mono';letter-spacing:.6px}
+.strip-item.active .strip-index{color:#fbbf24}
+/* ---- 微调对比（B1） ---- */
+.sheet-wide{max-width:720px}
+.sheet-quote{margin:0;padding:8px 10px;border-left:2px solid #f59e0b;background:#0b1220;color:#cbd5e1;font-size:11px;line-height:1.6}
+.diff-list{display:flex;flex-direction:column;gap:10px;max-height:46vh;overflow:auto}
+.diff-row{padding:9px 10px;border:1px solid #16202f;border-radius:8px;background:#080e18}
+.diff-row.changed{border-color:#3f2f14;background:#0d1017}
+.diff-row header{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.diff-row header b{font-size:10px;color:#cbd5e1}
+.diff-tag{padding:1px 6px;border-radius:4px;background:#1f2a3a;color:#fbbf24;font-size:8px}
+.diff-tag.muted{background:#131c2b;color:#64748b}
+.diff-before,.diff-after,.diff-same{margin:0;font-size:10px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.diff-before{color:#7b8798;text-decoration:line-through;text-decoration-color:#f43f5e66}
+.diff-after{color:#e2e8f0}
+.diff-same{color:#7b8798}
+.diff-arrow{margin:3px 0;color:#f59e0b}
+/* ---- 导出（E1/E3） ---- */
+.export-options{display:flex;flex-direction:column;gap:6px}
+.export-option{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border:1px solid #1e293b;border-radius:8px;background:#0a1120;text-align:left}
+.export-option.active{border-color:#f59e0b;background:#1a2434}
+.export-option b{font-size:11px;color:#cbd5e1}
+.export-option small{color:#64748b;font-size:9px}
+.export-issues{padding:9px 10px;border:1px solid #3f2f14;border-radius:8px;background:#0d0f16}
+.export-summary{display:flex;align-items:center;gap:6px;margin:0 0 6px;color:#fbbf24;font-size:10px}
+.export-summary.ok{color:#86efac}
+.export-issues ul{margin:0 0 8px;padding-left:16px;max-height:26vh;overflow:auto}
+.export-issues li{font-size:9px;line-height:1.7;color:#93a3b8}
+.export-issues li.error{color:#fda4af}
 </style>

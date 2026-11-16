@@ -30,10 +30,15 @@ VISION_PROMPT = """你是影视视听语言分析师。用户给出一段视频�
 3. move 用「中文名 + 英文名」，例如「缓慢横移 Truck」「手持跟拍 Handheld」。
 4. description 要写清画面里有什么、光从哪来、角色在做什么。
 5. prompt 用中文，以用户给的角色锚点开头（若未给则自行提炼）；runwayPrompt 为同内容的英文结构化描述。
-6. palette 只能从下列三套里按画面色调选择：
-   "from-amber-950 via-orange-950 to-slate-950" 暖金 / 黄昏
-   "from-indigo-950 via-slate-900 to-amber-950" 冷蓝 / 夜色
-   "from-red-950 via-amber-950 to-slate-950" 烈焰 / 高饱和
+6. palette 只能从下列八套里按画面色调选择：
+   "from-amber-950 via-orange-950 to-slate-950" 琥珀金 / 暖阳
+   "from-indigo-950 via-slate-900 to-amber-950" 暮色蓝 / 夜色
+   "from-red-950 via-amber-950 to-slate-950" 烈焰红 / 高饱和爆发
+   "from-teal-950 via-emerald-950 to-slate-950" 幽绿 / 潮湿诡秘
+   "from-violet-950 via-purple-950 to-slate-950" 紫罗兰 / 梦幻异界
+   "from-stone-800 via-stone-950 to-slate-950" 石青灰 / 写实废墟
+   "from-sky-950 via-slate-900 to-indigo-950" 冷空 / 清晨辽阔
+   "from-rose-950 via-red-950 to-stone-950" 血色 / 悲怆暴力
 7. 不要输出 JSON 之外的任何文字。"""
 
 

@@ -21,9 +21,11 @@ import assets
 import auth
 import db
 import deps
+import exports
 import media
 import projects
 import storyboard
+import uploads
 import vision
 from config import settings
 from deps import require_user
@@ -39,7 +41,15 @@ from errors import (
     UploadRejected,
     ValidationRejected,
 )
-from schemas import GenerateRequest, GenerateResponse
+from schemas import (
+    ExpandShotRequest,
+    ExpandShotResponse,
+    GenerateRequest,
+    GenerateResponse,
+    PlanResponse,
+    RefineRequest,
+    RefineResponse,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("recut")
@@ -50,6 +60,7 @@ PROTECTED_PREFIXES = (
     "/api/v1/projects",
     "/api/v1/characters",
     "/api/v1/tags",
+    "/api/v1/uploads",
 )
 
 
@@ -103,6 +114,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(assets.router)
+app.include_router(uploads.router)
+app.include_router(exports.router)
 
 
 def _http_error(exc: AppError) -> HTTPException:
@@ -190,3 +203,43 @@ async def reverse_storyboard(
             saved.cleanup()
     logger.info("解析素材成功：user=%s, %d 个镜头", user.id, len(shots))
     return GenerateResponse(shots=shots)
+
+
+@app.post("/api/v1/storyboard/plan", response_model=PlanResponse)
+async def plan_storyboard(
+    request: GenerateRequest, user=Depends(require_user)
+) -> PlanResponse:
+    """B4 阶段一：只生成镜头计划（不含提示词）。"""
+    try:
+        plan = await storyboard.plan_story(request)
+    except AppError as exc:
+        logger.warning("生成镜头计划失败（user=%s）：%s", user.id, exc)
+        raise _http_error(exc) from exc
+    logger.info("镜头计划成功：user=%s, %d 镜 / %ds", user.id, len(plan.shots), plan.total_seconds)
+    return PlanResponse(plan=plan)
+
+
+@app.post("/api/v1/storyboard/shot", response_model=ExpandShotResponse)
+async def expand_storyboard_shot(
+    payload: ExpandShotRequest, user=Depends(require_user)
+) -> ExpandShotResponse:
+    """B4 阶段二：把计划中的某一镜展开成完整分镜（前端并发调用）。"""
+    try:
+        shot = await storyboard.expand_shot(payload)
+    except AppError as exc:
+        logger.warning("展开第 %s 镜失败（user=%s）：%s", payload.index, user.id, exc)
+        raise _http_error(exc) from exc
+    return ExpandShotResponse(shot=shot)
+
+
+@app.post("/api/v1/storyboard/refine", response_model=RefineResponse)
+async def refine_storyboard_shot(
+    payload: RefineRequest, user=Depends(require_user)
+) -> RefineResponse:
+    """B1：按指令改写单镜，返回候选（不落库，由前端确认后写回）。"""
+    try:
+        shot = await storyboard.refine_shot(payload)
+    except AppError as exc:
+        logger.warning("镜头微调失败（user=%s）：%s", user.id, exc)
+        raise _http_error(exc) from exc
+    return RefineResponse(shot=shot)

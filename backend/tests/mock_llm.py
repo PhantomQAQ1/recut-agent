@@ -55,8 +55,48 @@ MOCK_SHOTS = {
     ]
 }
 
+# 镜头计划（B4 阶段一）
+MOCK_PLAN = {
+    "total_seconds": 9,
+    "narrative": "建立舞台 → 冲突升级 → 高潮定格",
+    "shots": [
+        {
+            "index": 1,
+            "duration": "04s",
+            "scale": "全景 WS",
+            "lens": "28mm",
+            "move": "缓慢横移 Truck",
+            "purpose": "建立环境",
+        },
+        {
+            "index": 2,
+            "duration": "05s",
+            "scale": "特写 ECU",
+            "lens": "85mm",
+            "move": "急速推镜 Crash Zoom",
+            "purpose": "高潮",
+        },
+    ],
+}
+
+# 单镜展开 / 微调（B4 阶段二、B1）
+MOCK_SINGLE_SHOT = {
+    "id": 1,
+    "duration": "04s",
+    "scale": "全景 WS",
+    "lens": "28mm",
+    "move": "缓慢横移 Truck",
+    "title": "雨夜的天台，霓虹在积水里碎成一片",
+    "description": "俯拍空旷天台，霓虹招牌的倒影在水洼里晃动。",
+    "prompt": "赛博城市, 女主, 雨夜天台俯拍, 霓虹倒影, 冷蓝色调, 电影级光影",
+    "runwayPrompt": "A 28mm wide overhead shot of an empty rooftop at rainy night, neon reflections, cinematic.",
+    "palette": "from-sky-950 via-slate-900 to-indigo-950",
+    "scene": "lantern",
+}
+
 
 class Handler(BaseHTTPRequestHandler):
+
     server_version = "MockLLM/1.0"
 
     def do_POST(self) -> None:  # noqa: N802 - http.server 约定
@@ -70,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         print(json.dumps(record, ensure_ascii=False), flush=True)
 
+        content = self._pick_response(body)
         payload = {
             "id": "mock-completion",
             "object": "chat.completion",
@@ -78,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": json.dumps(MOCK_SHOTS, ensure_ascii=False)},
+                    "message": {"role": "assistant", "content": json.dumps(content, ensure_ascii=False)},
                     "finish_reason": "stop",
                 }
             ],
@@ -90,6 +131,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    @staticmethod
+    def _pick_response(body: str) -> dict:
+        """按系统提示词判断当前是哪个环节，返回对应结构。"""
+        if "镜头计划" in body and "不要写提示词" in body:
+            return MOCK_PLAN
+        if "只需把「这一镜」" in body or "只写第" in body:
+            return {"shot": MOCK_SINGLE_SHOT}
+        if "分镜修改助手" in body:
+            refined = dict(MOCK_SINGLE_SHOT)
+            refined["title"] = "微调后的镜头标题"
+            refined["prompt"] = MOCK_SINGLE_SHOT["prompt"] + "，赛博朋克霓虹灯"
+            refined["runwayPrompt"] = MOCK_SINGLE_SHOT["runwayPrompt"] + " Neon cyberpunk lighting."
+            return {"shot": refined}
+        return MOCK_SHOTS
 
     @staticmethod
     def _extract(body: str, key: str) -> str:

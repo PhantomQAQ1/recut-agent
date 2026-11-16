@@ -79,6 +79,7 @@ class Settings:
     lockout_minutes: int
     password_min_length: int
     allowed_origins: tuple[str, ...]
+    upload_dir: str
 
     @property
     def llm_ready(self) -> bool:
@@ -119,6 +120,7 @@ def load_settings() -> Settings:
         lockout_minutes=_number("APP_LOCKOUT_MINUTES", 15, int),
         password_min_length=_number("APP_PASSWORD_MIN_LENGTH", 10, int),
         allowed_origins=_origins("APP_ALLOWED_ORIGINS", DEFAULT_ORIGINS),
+        upload_dir=_text("APP_UPLOAD_DIR", str(Path(__file__).with_name("uploads"))),
     )
 
 

@@ -5,8 +5,12 @@ AIGC 视频分镜与提示词工作台：把一句创意变成可直接投喂给
 ## 功能
 
 - **正向生成**：创意 + 二创风格 + 角色锚点 → 分镜脚本（景别 / 焦段 / 运镜 / 中英双语提示词）
+- **两阶段生成**：先出可编辑的镜头计划，确认后再逐镜并发展开提示词，单镜失败可单独重试
+- **单镜微调**：输入指令 → 模型改写 → 新旧字段对比 → 采用或放弃
+- **故事板卡片**：提示词为主体内容，支持参考首帧、场景层、8 套调色板、缩略导航
 - **逆向解析**：上传视频或图片 → 均匀抽帧 → 视觉模型反推视听语言
 - **角色资产库**：角色增删改查、标签体系、标签与角色联动、按标签筛选
+- **导出**：Markdown / CSV 即时下载；剪映草稿（占位图 + 文字轨，实验性）
 - **账号体系**：HttpOnly Cookie 会话、失败锁定、记住我、项目归属与自动保存
 
 ## 技术栈
@@ -87,6 +91,11 @@ GET    /api/v1/projects/{id}            PUT    /api/v1/projects/{id}
 DELETE /api/v1/projects/{id}
 
 POST   /api/v1/storyboard/generate      POST   /api/v1/storyboard/reverse
+POST   /api/v1/storyboard/plan          POST   /api/v1/storyboard/shot
+POST   /api/v1/storyboard/refine
+
+POST   /api/v1/uploads                  GET    /api/v1/uploads/{id}
+GET    /api/v1/projects/{id}/export/jianying
 
 GET    /api/v1/characters               POST   /api/v1/characters
 GET    /api/v1/characters/{id}          PATCH  /api/v1/characters/{id}
@@ -113,6 +122,7 @@ GET    /api/v1/tags/{id}/characters
 - 数据库为单机 SQLite，`uvicorn --workers > 1` 不可用；多实例部署需换 PostgreSQL
 - 账号仅支持管理员用 CLI 创建，找回密码 / 邮箱验证尚未实现
 - 造型一致性字段预留但暂未接入真实比对算法
+- **剪映草稿是实验性输出**：格式未公开且随版本变化，生成的 zip 里另附 `shots.md` / `shots.csv` 作为兜底
 
 ## License
 

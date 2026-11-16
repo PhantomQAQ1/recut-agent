@@ -11,12 +11,18 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
-# Tailwind 只生成它在源码里见过的类名，所以调色板必须限定在
-# frontend/src/App.vue 已出现的这三套渐变内，否则背景会变成无色。
+# 调色板 id 沿用 Tailwind 风格的字符串（历史数据不变），
+# 但前端渲染不再依赖 Tailwind 类名——.scene-art 原来用的是写死的渐变，
+# 类名从未生效。现在由 frontend/src/lib/palettes.ts 把 id 映射成具体色值。
 Palette = Literal[
     "from-amber-950 via-orange-950 to-slate-950",
     "from-indigo-950 via-slate-900 to-amber-950",
     "from-red-950 via-amber-950 to-slate-950",
+    "from-teal-950 via-emerald-950 to-slate-950",
+    "from-violet-950 via-purple-950 to-slate-950",
+    "from-stone-800 via-stone-950 to-slate-950",
+    "from-sky-950 via-slate-900 to-indigo-950",
+    "from-rose-950 via-red-950 to-stone-950",
 ]
 Scene = Literal["lantern", "curtain", "sparks"]
 
@@ -48,13 +54,18 @@ class Shot(BaseModel):
     edit: str = ""
     palette: Palette
     scene: Scene
+    # C1：参考首帧（uploads.id）。旧数据没有该字段，必须可选。
+    reference_image_id: int | None = None
+
+
+ModelName = Literal["即梦 Jimeng", "可灵 Kling", "Runway Gen-3"]
 
 
 class GenerateRequest(BaseModel):
     idea: str = Field(min_length=1, description="Story premise or creative idea")
     style: str = Field(default="燃向踩点")
     anchors: list[str] = Field(default_factory=list, max_length=12)
-    model: Literal["即梦 Jimeng", "可灵 Kling", "Runway Gen-3"] = "即梦 Jimeng"
+    model: ModelName = "即梦 Jimeng"
 
 
 class GenerateResponse(BaseModel):
@@ -62,6 +73,62 @@ class GenerateResponse(BaseModel):
     source: Literal["llm", "demo"] = "llm"
     shots: list[Shot]
     warning: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# B4：两阶段生成（先计划，再逐镜展开）
+# --------------------------------------------------------------------------- #
+
+
+class PlannedShot(BaseModel):
+    index: int
+    duration: str = Field(pattern=r"^\d{2}s$")
+    scale: str
+    lens: str
+    move: str
+    purpose: str = ""
+
+
+class ShotPlan(BaseModel):
+    total_seconds: int
+    narrative: str = ""
+    shots: list[PlannedShot] = Field(min_length=1, max_length=MAX_SHOTS)
+
+
+class PlanResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    plan: ShotPlan
+
+
+class ExpandShotRequest(BaseModel):
+    idea: str = Field(min_length=1)
+    style: str = "燃向踩点"
+    anchors: list[str] = Field(default_factory=list, max_length=12)
+    model: ModelName = "即梦 Jimeng"
+    plan: ShotPlan
+    index: int = Field(ge=1)
+
+
+class ExpandShotResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    shot: Shot
+
+
+# --------------------------------------------------------------------------- #
+# B1：单镜微调
+# --------------------------------------------------------------------------- #
+
+
+class RefineRequest(BaseModel):
+    shot: Shot
+    instruction: str = Field(min_length=1, max_length=300)
+    model: ModelName = "即梦 Jimeng"
+    anchors: list[str] = Field(default_factory=list, max_length=12)
+
+
+class RefineResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    shot: Shot
 
 
 # --------------------------------------------------------------------------- #
@@ -193,3 +260,63 @@ def parse_shots_payload(payload: object, limit: int = MAX_SHOTS) -> list[Shot]:
     if not shots:
         raise ValueError("shots 中没有可用的镜头")
     return shots
+
+
+# --------------------------------------------------------------------------- #
+# 镜头计划（B4 阶段一）的归一化
+# --------------------------------------------------------------------------- #
+
+
+def normalize_planned_shot(raw: dict, index: int) -> dict:
+    scale = _scale(raw.get("scale"))
+    return {
+        "index": index,
+        "duration": _duration(raw.get("duration")),
+        "scale": scale,
+        "lens": _lens(raw.get("lens"), scale),
+        "move": _as_text(raw.get("move"), "固定机位 Static"),
+        "purpose": _as_text(raw.get("purpose"))[:60],
+    }
+
+
+def parse_plan_payload(payload: object, limit: int = MAX_SHOTS) -> "ShotPlan":
+    """把模型返回的镜头计划收敛成契约。
+
+    `total_seconds` 由各镜时长求和得出，不采信模型自己算的数字。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("计划响应不是 JSON 对象")
+    raw_shots = payload.get("shots")
+    if not isinstance(raw_shots, list) or not raw_shots:
+        raise ValueError("计划中缺少非空的 shots 数组")
+
+    planned: list[PlannedShot] = []
+    for index, item in enumerate(raw_shots[:limit], start=1):
+        if not isinstance(item, dict):
+            continue
+        try:
+            planned.append(PlannedShot(**normalize_planned_shot(item, index)))
+        except ValidationError as exc:
+            raise ValueError(f"第 {index} 个计划镜头字段不合法：{exc}") from exc
+    if not planned:
+        raise ValueError("计划中没有可用的镜头")
+
+    total = sum(int(shot.duration[:2]) for shot in planned)
+    return ShotPlan(
+        total_seconds=total,
+        narrative=_as_text(payload.get("narrative"))[:200],
+        shots=planned,
+    )
+
+
+def parse_single_shot(payload: object, index: int = 1) -> Shot:
+    """解析单镜返回（B1 微调与 B4 逐镜展开共用）。"""
+    raw = payload
+    if isinstance(payload, dict) and isinstance(payload.get("shot"), dict):
+        raw = payload["shot"]
+    if not isinstance(raw, dict):
+        raise ValueError("单镜响应不是 JSON 对象")
+    try:
+        return Shot(**normalize_shot(raw, index - 1))
+    except ValidationError as exc:
+        raise ValueError(f"镜头字段不合法：{exc}") from exc
