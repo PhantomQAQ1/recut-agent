@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# 密钥与本地配置
+.env
+.env.local
+
+# 本地数据库（含账号与项目数据）
+*.db
+*.db-wal
+*.db-shm
+
+# 临时文件
+.tmp/
+.wheels/
+*.log
