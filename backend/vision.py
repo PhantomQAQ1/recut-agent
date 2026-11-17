@@ -12,7 +12,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
 
 from config import settings
 from errors import UpstreamError
-from llm import vision_client
+from llm import create_json_completion, vision_client
 from schemas import Shot, parse_shots_payload
 
 VISION_PROMPT = """你是影视视听语言分析师。用户给出一段视频按时间顺序抽取的关键帧（也可能是单张图片）。
@@ -86,12 +86,12 @@ async def analyze_frames(
     last_error: Exception | None = None
     for temperature in (0.6, 0.2):
         try:
-            completion = await client.chat.completions.create(
+            completion = await create_json_completion(
+                client,
                 model=settings.vision_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=4000,
-                response_format={"type": "json_object"},
             )
         except (APITimeoutError, APIConnectionError) as exc:
             raise UpstreamError(f"无法连接视觉模型服务：{exc}") from exc

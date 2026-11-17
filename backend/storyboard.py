@@ -11,7 +11,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
 
 from config import settings
 from errors import UpstreamError
-from llm import text_client
+from llm import create_json_completion, text_client
 from schemas import (
     ExpandShotRequest,
     GenerateRequest,
@@ -66,7 +66,8 @@ def build_user_prompt(request: GenerateRequest) -> str:
 
 async def _complete(client: AsyncOpenAI, request: GenerateRequest, temperature: float):
     try:
-        return await client.chat.completions.create(
+        return await create_json_completion(
+            client,
             model=settings.llm_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -74,7 +75,6 @@ async def _complete(client: AsyncOpenAI, request: GenerateRequest, temperature: 
             ],
             temperature=temperature,
             max_tokens=4000,
-            response_format={"type": "json_object"},
         )
     except (APITimeoutError, APIConnectionError) as exc:
         raise UpstreamError(f"无法连接模型服务：{exc}") from exc
@@ -162,7 +162,8 @@ async def _json_call(
     max_tokens: int = 4000,
 ) -> str:
     try:
-        completion = await client.chat.completions.create(
+        completion = await create_json_completion(
+            client,
             model=settings.llm_model,
             messages=[
                 {"role": "system", "content": system},
@@ -170,7 +171,6 @@ async def _json_call(
             ],
             temperature=temperature,
             max_tokens=max_tokens,
-            response_format={"type": "json_object"},
         )
     except (APITimeoutError, APIConnectionError) as exc:
         raise UpstreamError(f"无法连接模型服务：{exc}") from exc

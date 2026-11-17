@@ -7,11 +7,28 @@ DeepSeek / 通义千问 / Kimi / 智谱 / OpenAI 都提供 OpenAI 兼容接口�
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from config import settings
 from errors import MissingConfigError
+
+
+async def create_json_completion(client: AsyncOpenAI, **kwargs: Any):
+    """要求 JSON 输出的 chat 调用，服务商不支持 response_format 时自动降级。
+
+    魔搭 API-Inference、部分自建网关会直接对 response_format 返回 400，
+    这种情况下退化成"只靠提示词约束 + 事后提取 JSON"。
+    """
+    kwargs = dict(kwargs)
+    try:
+        return await client.chat.completions.create(
+            **kwargs, response_format={"type": "json_object"}
+        )
+    except BadRequestError:
+        kwargs.pop("response_format", None)
+        return await client.chat.completions.create(**kwargs)
 
 
 @lru_cache(maxsize=1)

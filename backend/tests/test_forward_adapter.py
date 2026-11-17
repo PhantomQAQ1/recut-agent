@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from forward_adapter import _move, agent_plan
+from forward_adapter import _extract_json, _move, agent_plan
 from schemas import GenerateRequest
 
 FRONTEND_MOVES = {
@@ -27,6 +27,17 @@ def test_move_mapping_targets_frontend_options():
     # 未知值原样保留，不能被吞掉
     assert _move("滑轨") == "滑轨"
     assert _move(None) == "固定机位 Static"
+
+
+def test_extract_json_handles_wrapped_output():
+    """模型把 JSON 包在解释文字或代码块里时，也要能取出来。"""
+    assert _extract_json('{"a": 1}') == {"a": 1}
+    assert _extract_json('好的，结果如下：\n{"a": 2}\n希望有帮助') == {"a": 2}
+    assert _extract_json('```json\n{"a": 3}\n```') == {"a": 3}
+    # 嵌套对象不能被提前截断
+    assert _extract_json('前言 {"a": {"b": 1}} 后记') == {"a": {"b": 1}}
+    # 字符串里的大括号不能干扰配对
+    assert _extract_json('{"a": "}"}') == {"a": "}"}
 
 
 def test_agent_plan_without_key_is_marked_demo():

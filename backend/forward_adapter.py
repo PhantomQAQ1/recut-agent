@@ -1,7 +1,13 @@
 """将独立正向 Agent 的输出适配到现有可编辑镜头计划。"""
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
+from typing import Any
+
 from forward_agent import ForwardAgent, LLMError, Platform
+from forward_agent.provider import OpenAICompatProvider
 from config import settings
 from errors import UpstreamError
 from schemas import GenerateRequest, PlannedShot, ShotPlan, normalize_shot, Shot
@@ -26,6 +32,121 @@ def _move(value: object) -> str:
     return _MOVE_MAP.get(text, text or "固定机位 Static")
 
 
+def _extract_json(text: str) -> dict[str, Any]:
+    """从模型输出里取出 JSON 对象。
+
+    不是所有服务商都支持 response_format 强制 JSON，模型可能包一层解释文字，
+    这里先按原样解析，失败再按括号配对截取第一个对象。
+    """
+    stripped = (text or "").strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:]
+        stripped = stripped.strip()
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    start = stripped.find("{")
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(stripped)):
+            char = stripped[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(stripped[start : index + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(data, dict):
+                        return data
+                    break
+    raise LLMError("UPSTREAM_SHAPE", (text or "")[:300])
+
+
+class _CompatProvider(OpenAICompatProvider):
+    """官方 Provider 之上的兼容层，只做两件事：
+
+    1. 服务端对 `response_format` 返回 400 时，去掉该参数重试一次。
+       魔搭 API-Inference 与部分自建网关会出现这种情况。
+    2. 返回内容不是纯 JSON 时，从文本里截取第一个 JSON 对象。
+    """
+
+    def _post(self, model: str, messages, temperature: float) -> dict[str, Any]:  # type: ignore[override]
+        base = {"model": model, "messages": messages, "temperature": temperature}
+        for attempt in range(2):
+            payload = dict(base)
+            if attempt == 0:
+                payload["response_format"] = {"type": "json_object"}
+            try:
+                return self._request(payload)
+            except LLMError as exc:
+                if attempt == 0 and exc.code == "UPSTREAM_STATUS_400":
+                    continue
+                raise
+        raise LLMError("UPSTREAM_HTTP", "重试后仍未拿到响应")
+
+    def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            self.base_url + "/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer " + self.api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = json.loads(response.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            raise LLMError(
+                "UPSTREAM_STATUS_%s" % exc.code,
+                exc.read().decode("utf-8", "replace")[:500],
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise LLMError("UPSTREAM_HTTP", str(exc)) from exc
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError("UPSTREAM_SHAPE", json.dumps(body, ensure_ascii=False)[:500]) from exc
+        if isinstance(content, dict):
+            return content
+        return _extract_json(str(content))
+
+
+def _build_agent() -> ForwardAgent:
+    if not settings.llm_api_key:
+        # 没有 Key 时用包内确定性 Mock，调用链仍可验证
+        return ForwardAgent()
+    provider = _CompatProvider(
+        settings.llm_base_url, settings.llm_api_key, settings.request_timeout
+    )
+    return ForwardAgent(
+        provider=provider, model=settings.llm_model, timeout=settings.request_timeout
+    )
+
+
 async def agent_plan(request: GenerateRequest) -> tuple[ShotPlan, bool]:
     """生成镜头计划，并把每镜的完整卡片一并带回来。
 
@@ -33,12 +154,7 @@ async def agent_plan(request: GenerateRequest) -> tuple[ShotPlan, bool]:
     前端需要把它当演示数据对待。
     """
     demo = not settings.llm_ready
-    agent = ForwardAgent(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key or "",
-        model=settings.llm_model,
-        timeout=settings.request_timeout,
-    )
+    agent = _build_agent()
     platform = {
         "即梦 Jimeng": Platform.JIMENG,
         "可灵 Kling": Platform.KLING,
