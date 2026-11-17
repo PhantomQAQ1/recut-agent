@@ -249,3 +249,13 @@ def test_same_origin_behind_proxy_is_allowed(client):
         },
     )
     assert response.status_code == 200
+
+
+def test_bootstrap_status_exposes_counts_without_credentials(client):
+    """部署自检接口：只报数量与布尔值，不能泄露任何凭据。"""
+    make_user("boot-check@example.com")
+    data = client.get("/api/bootstrap").json()
+    assert data["users"] >= 1
+    assert isinstance(data["bootstrap_configured"], bool)
+    assert "password" not in str(data).lower() or "AUTH_BOOTSTRAP_PASSWORD" in data["hint"]
+    assert "bootstrap_configured" in data

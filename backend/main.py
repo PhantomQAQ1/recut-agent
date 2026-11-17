@@ -210,6 +210,31 @@ async def health() -> dict[str, object]:
     }
 
 
+@app.get("/api/bootstrap", include_in_schema=False)
+async def bootstrap_status() -> dict[str, object]:
+    """部署自检：库里有没有账号、初始管理员变量配没配。
+
+    只暴露数量和布尔值，不含任何凭据，用于排查"登录报邮箱或密码不正确"。
+    """
+    users = repositories.list_users()
+    return {
+        "users": len(users),
+        "bootstrap_configured": bool(
+            (os.getenv("AUTH_BOOTSTRAP_EMAIL") or "").strip()
+            and (os.getenv("AUTH_BOOTSTRAP_PASSWORD") or "").strip()
+        ),
+        "db_path": db.database_path(),
+        "hint": (
+            "users=0 且 bootstrap_configured=false：没有配 AUTH_BOOTSTRAP_EMAIL/PASSWORD"
+            if not users
+            and not (os.getenv("AUTH_BOOTSTRAP_EMAIL") and os.getenv("AUTH_BOOTSTRAP_PASSWORD"))
+            else "users=0 且已配置：密码可能不足 10 位，或是改了变量没重启"
+            if not users
+            else "已有账号：确认邮箱与密码；忘记密码可用 scripts/manage_user.py 重置"
+        ),
+    }
+
+
 @app.post("/api/v1/storyboard/generate", response_model=GenerateResponse)
 async def generate_storyboard(
     request: GenerateRequest, user=Depends(require_user)

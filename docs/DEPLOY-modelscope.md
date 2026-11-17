@@ -131,13 +131,25 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 
 ### 登录报「邮箱或密码不正确」的三种原因
 
-这是新部署最常见的问题，按顺序排查：
+这是新部署最常见的问题。**最快的判断方式是打开自检接口**：
 
-| 原因 | 现象（启动日志） | 处理 |
-|---|---|---|
-| 没配 `AUTH_BOOTSTRAP_EMAIL` / `AUTH_BOOTSTRAP_PASSWORD` | `库里还没有任何账号，且未设置 AUTH_BOOTSTRAP_EMAIL ...` | 补上两个变量后重启 |
-| 密码不满足策略（**至少 10 位**、首尾不能有空格） | `AUTH_BOOTSTRAP_PASSWORD 不合规，已跳过初始管理员创建（密码至少需要 10 位）` | 换一个 ≥10 位的密码 |
-| 改了变量但没重启 | 日志里没有任何"已创建初始管理员" | 环境变量改动必须重启创空间才生效 |
+```
+https://<你的空间域名>/api/bootstrap
+```
+
+返回示例：
+
+```json
+{"users": 0, "bootstrap_configured": false, "db_path": "/app/backend/recut.db", "hint": "..."}
+```
+
+| `users` | `bootstrap_configured` | 含义 | 处理 |
+|---|---|---|---|
+| 0 | false | 两个变量都没配 | 补上 `AUTH_BOOTSTRAP_EMAIL` / `AUTH_BOOTSTRAP_PASSWORD` 后重启 |
+| 0 | true | 配了但没建成 | 密码**至少 10 位**、首尾不能有空格；或改了变量没重启 |
+| ≥1 | — | 账号已存在 | 邮箱/密码记错；用 `scripts/manage_user.py list` 查看，或 `passwd` 重置 |
+
+`db_path` 顺便还能验证持久化是否生效：指向 `/mnt/workspace/...` 才说明数据能留存。
 
 建号成功的日志是：
 
