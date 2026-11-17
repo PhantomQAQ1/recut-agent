@@ -94,6 +94,7 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 
 | 变量 | 说明 |
 |---|---|
+| `APP_ROOT_PATH` | **打开空间地址返回 `{"detail":"Not Found"}` 时填这个**。有些平台不剥掉访问前缀（形如 `/studios/<用户>/<空间名>/`），把前缀原样填进来（结尾不要带斜杠），路由才会按根路径匹配；平台已剥前缀时留空 |
 | `APP_ALLOWED_ORIGINS` | 同源部署一般不需要；如果前端独立域名，填它的 origin |
 | `MAX_FRAMES` | 逆向解析抽帧数，默认 6 |
 | `PORT` | 默认 7860，一般不用改 |
@@ -134,6 +135,8 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 
 | 现象 | 可能原因 | 处理 |
 |---|---|---|
+| 打开空间返回 `{"detail":"Not Found"}`，但 `/api/health` 正常 | 前端产物没进镜像 | 看构建日志里有没有 `COPY --from=frontend /build/dist`；确认第一阶段 `npm run build` 成功 |
+| 打开空间返回 `{"detail":"Not Found"}`，`/api/health` 也是 404 | 平台没有剥掉访问前缀 | 设置 `APP_ROOT_PATH=/studios/<用户>/<空间名>` 后重启 |
 | 部署成功但页面 404 | 前端没构建出来 | 看构建日志是否有 `npm run build` 失败；确认 `frontend/package-lock.json` 在仓库里（`npm ci` 需要它） |
 | 页面能开但所有请求 404 | `frontend/dist` 没进镜像 | 检查 `.dockerignore` 是否误排除了 `dist`（本项目是构建期生成，正常不该有） |
 | 登录成功但立刻又变未登录 | cookie 没带上 | 确认 `APP_COOKIE_SECURE=true` 且通过 **https** 访问；用 http 访问会丢 cookie |

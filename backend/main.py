@@ -290,4 +290,13 @@ if (_FRONTEND_DIST / "index.html").is_file():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
     logger.info("已挂载前端静态目录：%s", _FRONTEND_DIST)
 else:
-    logger.info("未找到 frontend/dist，仅提供 API（开发模式）")
+    logger.warning("未找到 frontend/dist：根路径不提供页面，只提供 /api")
+
+    @app.get("/", include_in_schema=False)
+    def _root_without_frontend() -> dict[str, str]:
+        """没有前端产物时给一句人话，而不是让访问者看到一个裸的 404。"""
+        return {
+            "service": "recut-agent",
+            "detail": "前端产物未找到（frontend/dist/index.html），当前仅提供 API",
+            "health": "/api/health",
+        }

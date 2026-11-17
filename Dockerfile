@@ -43,4 +43,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # 必须监听 0.0.0.0，否则平台的端口探测连不上。
 # --proxy-headers：创空间前面有一层反向代理，需要它才能拿到真实的协议与 Host。
-CMD ["sh", "-c", "exec python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860} --proxy-headers --forwarded-allow-ips=*"]
+# --root-path：有些平台不剥掉访问前缀（/studios/<用户>/<空间名>/），
+#   此时把前缀写进 APP_ROOT_PATH，路由才会按根路径匹配；平台已剥前缀时留空即可。
+CMD ["sh", "-c", "exec python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860} --proxy-headers --forwarded-allow-ips=* --root-path \"${APP_ROOT_PATH:-}\""]
