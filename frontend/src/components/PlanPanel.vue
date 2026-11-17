@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** B4：镜头计划面板。确认后才逐镜展开提示词。 */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Check, LoaderCircle, Plus, Trash2, X } from 'lucide-vue-next'
 import {
   DURATION_OPTIONS,
@@ -16,13 +16,19 @@ const props = defineProps<{
   busy: boolean
   /** index -> pending / done / error */
   progress: Record<number, 'pending' | 'done' | 'error'>
+  /** 故事板上已有的卡片数；>0 时让用户选择替换还是追加 */
+  existingShots?: number
 }>()
 
 const emit = defineEmits<{
-  confirm: []
+  confirm: [mode: 'replace' | 'append']
   cancel: []
   update: [plan: ShotPlan]
 }>()
+
+/** 展开结果怎么落盘：默认替换，用户可改为追加到末尾。 */
+const mode = ref<'replace' | 'append'>('replace')
+const existing = computed(() => props.existingShots ?? 0)
 
 const totalSeconds = computed(() => planSeconds(props.plan))
 const doneCount = computed(
@@ -82,10 +88,28 @@ function durationChanged() {
         <h3>镜头计划 · {{ props.plan.shots.length }} 镜 / {{ totalSeconds }}s</h3>
       </div>
       <div class="plan-head-actions">
+        <div v-if="existing > 0" class="plan-mode" role="group" aria-label="展开结果的落盘方式">
+          <button
+            type="button"
+            :class="{ chosen: mode === 'replace' }"
+            :disabled="props.busy"
+            @click="mode = 'replace'"
+          >
+            替换 {{ existing }} 张
+          </button>
+          <button
+            type="button"
+            :class="{ chosen: mode === 'append' }"
+            :disabled="props.busy"
+            @click="mode = 'append'"
+          >
+            追加到末尾
+          </button>
+        </div>
         <button class="login-ghost plan-cancel" type="button" :disabled="props.busy" @click="$emit('cancel')">
           放弃计划
         </button>
-        <button class="login-submit plan-confirm" type="button" :disabled="props.busy" @click="$emit('confirm')">
+        <button class="login-submit plan-confirm" type="button" :disabled="props.busy" @click="emit('confirm', mode)">
           <LoaderCircle v-if="props.busy" class="spin" :size="15" />
           <Check v-else :size="15" />
           {{ props.busy ? `展开中 ${doneCount}/${props.plan.shots.length}` : '确认并展开提示词' }}

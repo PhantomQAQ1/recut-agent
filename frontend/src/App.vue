@@ -327,6 +327,11 @@ const plan = ref<ShotPlan | null>(null)
 const expandedShots = ref<Record<number, Shot>>({})
 const expandProgress = ref<Record<number, 'pending' | 'done' | 'error'>>({})
 const expanding = ref(false)
+/** 展开结果如何落到故事板：替换现有卡片，或追加到末尾。 */
+const expansionMode = ref<'replace' | 'append'>('replace')
+/** 追加模式下，展开前的故事板快照与起始 id。 */
+let appendBase: Shot[] = []
+let appendIdStart = 0
 const refiningId = ref<number | null>(null)
 const refineCandidate = ref<{ before: Shot; after: Shot; instruction: string } | null>(null)
 const exportOpen = ref(false)
@@ -350,13 +355,38 @@ function refreshFromExpansion(current: ShotPlan) {
   const ordered = current.shots
     .map((item) => expandedShots.value[item.index])
     .filter((shot): shot is Shot => Boolean(shot))
-  if (ordered.length) shots.value = ordered
+  if (!ordered.length) return
+
+  if (expansionMode.value === 'append') {
+    // id 用固定起点 + 序号生成，多次刷新时保持稳定，避免卡片被反复重建
+    const extra = ordered.map((shot, offset) => ({ ...shot, id: appendIdStart + offset }))
+    shots.value = [...appendBase, ...extra]
+    return
+  }
+  shots.value = ordered
 }
 
 /** B4 阶段二：逐镜并发展开；已完成的镜头不会重复请求，失败可单独重试。 */
-async function confirmPlan() {
+async function confirmPlan(mode: 'replace' | 'append' = 'replace') {
   const current = plan.value
   if (!current || expanding.value || !isAuthenticated.value) return
+
+  // 覆盖确认：故事板上已有卡片时，替不替换由用户明确选择，不能静默清空
+  if (mode === 'replace' && shots.value.length) {
+    const confirmed = window.confirm(
+      `展开后会替换故事板上现有的 ${shots.value.length} 张卡片。\n原内容可以用 Ctrl+Z 撤销，继续？`,
+    )
+    if (!confirmed) return
+  }
+
+  expansionMode.value = mode
+  if (mode === 'append') {
+    appendBase = shots.value.map((shot) => ({ ...shot }))
+    appendIdStart = Math.max(0, ...appendBase.map((shot) => shot.id)) + 1
+  } else {
+    appendBase = []
+  }
+
   expanding.value = true
   try {
     const pending = current.shots.filter((item) => !expandedShots.value[item.index])
@@ -979,7 +1009,7 @@ onBeforeUnmount(() => {
         <div class="board-toolbar"><div class="toolbar-label"><Film :size="14" /><span>镜头序列</span><span class="toolbar-divider"></span><span class="subtle">{{ modelHint }}</span></div><div class="view-switch"><button :class="{ selected: viewMode === 'grid' }" @click="viewMode = 'grid'"><Layers3 :size="13" />卡片</button><button :class="{ selected: viewMode === 'list' }" @click="viewMode = 'list'"><span>☷</span>列表</button></div></div>
         <div v-if="loading" class="skeleton-list"><div v-for="i in 3" :key="i" class="skeleton-card"><div class="skeleton-line w-1/3"></div><div class="skeleton-image"></div><div class="skeleton-line w-3/4"></div></div></div>
         <template v-else>
-  <PlanPanel v-if="plan" :plan="plan" :busy="expanding" :progress="expandProgress" @confirm="confirmPlan" @cancel="cancelPlan" @update="updatePlan" />
+  <PlanPanel v-if="plan" :plan="plan" :busy="expanding" :progress="expandProgress" :existing-shots="shots.length" @confirm="confirmPlan" @cancel="cancelPlan" @update="updatePlan" />
   <template v-else>
     <ShotBoard :shots="shots" :model="model" :anchors="projectAnchors" :view-mode="viewMode" :refining-id="refiningId" :characters="assetCharacters" @copy="copyPrompt" @refine="refineShot" @upload="requestUpload" @remove-reference="removeReference" @remove="removeShot" @bind="openBinding" @inject-missing="injectMissing" @move="moveShot" @add="addShot" />
     <StoryboardStrip :shots="shots" :active-index="activeShotIndex" @select="scrollToShot" />
@@ -1216,4 +1246,8 @@ onBeforeUnmount(() => {
 .idea-warn{color:#fbbf24}
 .conflict-reload{padding:4px 10px;border:1px solid #7f5f18;border-radius:999px;background:#2a1f0a;color:#fbbf24;font-size:9px}
 .conflict-reload:hover{background:#3d2c0d}
+.plan-mode{display:flex;gap:3px;padding:3px;border:1px solid #1e293b;border-radius:7px;background:#0a1120}
+.plan-mode button{padding:5px 9px;border:0;border-radius:5px;background:transparent;color:#8190a5;font-size:9px}
+.plan-mode button.chosen{background:#1a2434;color:#fbbf24}
+.plan-mode button:disabled{opacity:.5}
 </style>
