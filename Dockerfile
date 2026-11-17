@@ -1,11 +1,13 @@
-# syntax=docker/dockerfile:1
+# 注意：不要加 `# syntax=docker/dockerfile:1`。
+# 那行会让构建器先从 Docker Hub 拉 dockerfile 前端镜像，
+# 在创空间的构建网络里可能拉不到导致整次构建失败；本文件也没用到任何高级语法。
 
 # ---------- 阶段 1：构建前端 ----------
 # 用独立的 node 镜像构建，产物是纯静态文件；最终镜像里不会留下 node_modules。
 FROM node:20-slim AS frontend
 WORKDIR /build
-# 国内构建（如魔搭创空间）如果 npm 拉取慢，取消下面一行的注释换镜像源
-# RUN npm config set registry https://registry.npmmirror.com
+# 走国内镜像源，规避构建机访问 registry.npmjs.org 慢/超时（npm 10 会按此配置重写 lockfile 里的域名）
+RUN npm config set registry https://registry.npmmirror.com
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
@@ -21,9 +23,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # 先装依赖，利用构建缓存：只改业务代码时不会重装依赖
-# 国内构建如果 PyPI 慢，可在下面一行前加 --index-url https://mirrors.aliyun.com/pypi/simple/
+# 走国内 PyPI 镜像，避免构建机访问 pypi.org 超时；如需官方源，删掉 --index-url 参数即可
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN python -m pip install --no-cache-dir -r backend/requirements.txt
+RUN python -m pip install --no-cache-dir \
+        --index-url https://mirrors.aliyun.com/pypi/simple/ \
+        -r backend/requirements.txt
 
 COPY backend/ ./backend/
 COPY --from=frontend /build/dist ./frontend/dist
