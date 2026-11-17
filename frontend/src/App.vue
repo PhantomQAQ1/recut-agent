@@ -29,7 +29,17 @@ const model = ref(models[0])
 const mode = ref<'forward' | 'reverse'>('forward')
 const viewMode = ref<'grid' | 'list'>('grid')
 const project = ref('黑神话：最后一盏灯')
-const idea = ref('黄昏时分，天命人走进一座被遗忘的戏台。台上空无一人，锣鼓却自己响了起来……')
+/**
+ * 剧情梗概：项目级字段，随 storyboard 一起保存。
+ * 早前它只是个组件内变量，从来没进过文档，所以刷新就丢——
+ * 现在老项目读出来是空串，靠 placeholder 提示，不会强行塞示例文案。
+ */
+const idea = ref('')
+const ideaEmpty = computed(() => !idea.value.trim())
+const ideaWarn = computed(() => {
+  const length = idea.value.trim().length
+  return length > 0 && (length < 20 || length > 500)
+})
 const style = ref('燃向踩点')
 const styles = ['搞笑反转', '燃向踩点', '黑深残', '日常整活']
 // 项目级角色：锚点从角色资产派生，不再让用户手打字符串（避免三处表述不一致）
@@ -73,6 +83,10 @@ function notify(message: string) { toast.value = message; window.setTimeout(() =
 async function copyPrompt(shot: Shot) { try { await navigator.clipboard.writeText(activePrompt(shot)); notify('提示词已复制到剪贴板') } catch { notify('复制失败，请检查浏览器剪贴板权限') } }
 async function generate() {
   if (loading.value || !isAuthenticated.value) return
+  if (ideaEmpty.value) {
+    notify('先写一句剧情梗概，再生成分镜')
+    return
+  }
   loading.value = true
   try {
     // B4 阶段一：先出镜头计划，用户确认后再逐镜展开提示词。
@@ -258,6 +272,11 @@ function onKeydown(event: KeyboardEvent) {
   const meta = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
 
+  if (meta && key === 's') {
+    event.preventDefault()
+    void manualSave()
+    return
+  }
   if (meta && key === 'z') {
     event.preventDefault()
     if (event.shiftKey) history.redo()
@@ -547,6 +566,8 @@ type StoryboardDoc = {
   shots: Shot[]
   style: string
   model: string
+  /** 剧情梗概（项目级） */
+  idea: string
   /** 项目级角色（锚点由角色资产派生） */
   character_ids: number[]
   /** 项目补充词（画风 / 镜头语言） */
@@ -570,6 +591,7 @@ function storyboardDoc(): StoryboardDoc {
     shots: shots.value,
     style: style.value,
     model: model.value,
+    idea: idea.value,
     character_ids: projectCharacterIds.value,
     extras: extras.value,
     plan: plan.value,
@@ -581,6 +603,8 @@ function applyStoryboard(doc: Partial<StoryboardDoc> | undefined) {
   if (Array.isArray(doc.shots)) shots.value = doc.shots as Shot[]
   if (typeof doc.style === 'string') style.value = doc.style
   if (typeof doc.model === 'string') model.value = doc.model
+  // 老项目没有 idea 字段：给空串，靠 placeholder 提示，不覆盖成示例文案
+  idea.value = typeof doc.idea === 'string' ? doc.idea : ''
 
   projectCharacterIds.value = Array.isArray(doc.character_ids)
     ? (doc.character_ids as number[])
@@ -633,6 +657,8 @@ async function openProject(id: number) {
 }
 
 async function createProject() {
+  // 先把手头未保存的改动落盘，否则新建项目会把它们丢掉
+  await flushSave()
   try {
     const data = await api.post<{ id: number }>('/api/v1/projects', {
       name: '未命名项目',
@@ -640,6 +666,8 @@ async function createProject() {
         shots: [],
         style: style.value,
         model: model.value,
+        // 新建项目刻意留空，让用户自己写；示例文案只放在 placeholder 里
+        idea: '',
         character_ids: projectCharacterIds.value,
         extras: extras.value,
       },
@@ -657,7 +685,37 @@ async function switchProject(id: number) {
     projectMenuOpen.value = false
     return
   }
+  // 防抖窗口内切换项目会把刚输入的内容覆盖掉，这里先 flush
+  await flushSave()
   await openProject(id)
+}
+
+/** 立即把待保存的改动写库（绕过 1.2s 防抖）。 */
+async function flushSave() {
+  if (projectId.value === null || !isAuthenticated.value) return
+  if (saveTimer === undefined) return
+  window.clearTimeout(saveTimer)
+  saveTimer = undefined
+  await persistProject()
+}
+
+/** Ctrl/⌘+S：立即落盘（绕过防抖）。 */
+async function manualSave() {
+  if (projectId.value === null) {
+    notify('项目还没保存过，稍后再试')
+    return
+  }
+  window.clearTimeout(saveTimer)
+  saveTimer = undefined
+  await persistProject()
+  notify(saveState.value === 'saved' ? '已保存' : '保存失败，请检查网络')
+}
+
+/** 还有没写完的保存时，关页面前提醒一下。 */
+function onBeforeUnload(event: BeforeUnloadEvent) {
+  if (saveTimer === undefined) return
+  event.preventDefault()
+  event.returnValue = ''
 }
 
 function scheduleSave() {
@@ -670,6 +728,8 @@ function scheduleSave() {
 async function persistProject() {
   const id = projectId.value
   if (id === null || !isAuthenticated.value) return
+  window.clearTimeout(saveTimer)
+  saveTimer = undefined
   try {
     await api.put(`/api/v1/projects/${id}`, {
       name: project.value.trim() || '未命名项目',
@@ -829,6 +889,7 @@ async function createTagFromEditor(payload: {
 onMounted(async () => {
   window.addEventListener('scroll', onViewportScroll, { passive: true })
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('beforeunload', onBeforeUnload)
   await bootstrap()
   try {
     await syncProjects()
@@ -839,7 +900,7 @@ onMounted(async () => {
   if (isAuthenticated.value) await ensureAssetsLoaded()
 })
 
-watch([project, style, model, projectCharacterIds, extras, shots, plan], scheduleSave, { deep: true })
+watch([project, style, model, idea, projectCharacterIds, extras, shots, plan], scheduleSave, { deep: true })
 
 watch(user, async (current, previous) => {
   if (current && !previous) {
@@ -864,6 +925,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(saveTimer)
   window.removeEventListener('scroll', onViewportScroll)
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('beforeunload', onBeforeUnload)
 })
 
 </script>
@@ -877,9 +939,9 @@ onBeforeUnmount(() => {
     <div class="workspace">
       <aside class="left-panel"><div class="panel-heading"><div><p class="eyebrow">WORKSPACE</p><h2>创作工作台</h2></div><button class="icon-button"><SlidersHorizontal :size="16" /></button></div>
         <div class="mode-switch"><button :class="{ active: mode === 'forward' }" @click="mode = 'forward'"><Sparkles :size="14" />正向生成</button><button :class="{ active: mode === 'reverse' }" @click="mode = 'reverse'"><ScanLine :size="14" />逆向拆解</button></div>
-        <template v-if="mode === 'forward'"><div class="field-label"><span>剧情梗概</span><span class="muted">灵感由此开始</span></div><textarea v-model="idea" class="idea-input" rows="5"></textarea><div class="field-label style-heading"><span>二创风格</span><span class="muted">选择一种叙事基调</span></div><div class="style-grid"><button v-for="item in styles" :key="item" :class="{ chosen: style === item }" @click="style = item">{{ item }}</button></div></template>
+        <template v-if="mode === 'forward'"><div class="field-label"><span>剧情梗概</span><span class="muted" :class="{ 'idea-warn': ideaWarn }">{{ idea.length }} 字 · 建议 20-500</span></div><textarea v-model="idea" class="idea-input" rows="5" placeholder="写下这个故事：人物、场景、冲突、结局……例如：黄昏时分，天命人走进一座被遗忘的戏台，台上空无一人，锣鼓却自己响了起来。"></textarea><div class="field-label style-heading"><span>二创风格</span><span class="muted">选择一种叙事基调</span></div><div class="style-grid"><button v-for="item in styles" :key="item" :class="{ chosen: style === item }" @click="style = item">{{ item }}</button></div></template>
         <template v-else><div class="field-label"><span>参考素材</span><span class="muted">5–15 秒为佳</span></div><input ref="fileInput" class="hidden-file" type="file" accept="video/*,image/*" @change="onFileChange" /><div class="upload-box" role="button" tabindex="0" @click="fileInput?.click()" @keydown.enter="fileInput?.click()" @dragover.prevent @drop.prevent="onDrop"><Upload :size="21" /><b>拖拽视频或漫画切片至此</b><span>支持 MP4、MOV、PNG、JPG</span><template v-if="selectedFile"><strong>{{ selectedFile.name }}</strong><span>{{ formatSize(selectedFile.size) }}</span></template></div><button class="generate-btn mt-4" :disabled="loading" @click="reverse"><LoaderCircle v-if="loading" class="spin" :size="16" /><ScanLine v-else :size="16" />{{ loading ? '正在解析视听语言…' : '一键解析视听语言' }}<ArrowRight :size="15" /></button></template>
-        <section class="anchor-card"><div class="anchor-head"><span class="anchor-symbol"><LockKeyhole :size="15" /></span><div><b>角色一致性锚点</b><small>CHARACTER ANCHORS</small></div><button class="mini-add" title="添加项目补充词" @click="addExtra"><Plus :size="15" /></button></div><p class="anchor-label">项目角色 <span class="muted">锚点由角色资产派生</span></p><div class="anchor-tags"><button v-for="character in assetCharacters" :key="character.id" class="anchor-char" :class="{ chosen: projectCharacterIds.includes(character.id) }" @click="toggleProjectCharacter(character.id)">{{ character.name }}</button><span v-if="!assetCharacters.length" class="anchor-note">右侧资产库还没有角色</span></div><template v-if="anchorStats.length"><p class="anchor-label">锚点命中</p><ul class="anchor-stats"><li v-for="stat in anchorStats" :key="stat.text" :class="{ miss: stat.hits < stat.total }"><span class="anchor-text">{{ stat.text }}</span><span class="anchor-hit">{{ stat.hits }}/{{ stat.total }}</span></li></ul></template><template v-if="extras.length"><p class="anchor-label">项目补充词</p><div class="anchor-tags"><button v-for="extra in extras" :key="extra" class="anchor-tag" @click="removeExtra(extra)">{{ extra }} <X :size="10" /></button></div></template><p class="anchor-note">生成 / 展开 / 微调都会注入；缺失只在卡片上提示，不自动改写</p></section><button class="generate-btn" :disabled="loading" @click="generate"><WandSparkles :size="16" />生成分镜脚本<ArrowRight :size="15" /></button><div class="sidebar-footer">AI 创作引擎已就绪 <span>v1.2.0</span></div>
+        <section class="anchor-card"><div class="anchor-head"><span class="anchor-symbol"><LockKeyhole :size="15" /></span><div><b>角色一致性锚点</b><small>CHARACTER ANCHORS</small></div><button class="mini-add" title="添加项目补充词" @click="addExtra"><Plus :size="15" /></button></div><p class="anchor-label">项目角色 <span class="muted">锚点由角色资产派生</span></p><div class="anchor-tags"><button v-for="character in assetCharacters" :key="character.id" class="anchor-char" :class="{ chosen: projectCharacterIds.includes(character.id) }" @click="toggleProjectCharacter(character.id)">{{ character.name }}</button><span v-if="!assetCharacters.length" class="anchor-note">右侧资产库还没有角色</span></div><template v-if="anchorStats.length"><p class="anchor-label">锚点命中</p><ul class="anchor-stats"><li v-for="stat in anchorStats" :key="stat.text" :class="{ miss: stat.hits < stat.total }"><span class="anchor-text">{{ stat.text }}</span><span class="anchor-hit">{{ stat.hits }}/{{ stat.total }}</span></li></ul></template><template v-if="extras.length"><p class="anchor-label">项目补充词</p><div class="anchor-tags"><button v-for="extra in extras" :key="extra" class="anchor-tag" @click="removeExtra(extra)">{{ extra }} <X :size="10" /></button></div></template><p class="anchor-note">生成 / 展开 / 微调都会注入；缺失只在卡片上提示，不自动改写</p></section><button class="generate-btn" :disabled="loading || ideaEmpty" :title="ideaEmpty ? '先写一句剧情梗概' : ''" @click="generate"><WandSparkles :size="16" />生成分镜脚本<ArrowRight :size="15" /></button><div class="sidebar-footer">AI 创作引擎已就绪 <span>v1.2.0</span></div>
       </aside>
       <main class="canvas"><div class="canvas-top"><div><div class="breadcrumb">项目 <span>/</span> {{ project }}</div><div class="canvas-title"><h1>故事板</h1><span class="shot-count">{{ shots.length }} SHOTS</span></div></div><div class="collab-pill"><span></span>人机协同 · 等待你的灵感</div></div>
         <div class="board-toolbar"><div class="toolbar-label"><Film :size="14" /><span>镜头序列</span><span class="toolbar-divider"></span><span class="subtle">{{ modelHint }}</span></div><div class="view-switch"><button :class="{ selected: viewMode === 'grid' }" @click="viewMode = 'grid'"><Layers3 :size="13" />卡片</button><button :class="{ selected: viewMode === 'list' }" @click="viewMode = 'list'"><span>☷</span>列表</button></div></div>
@@ -1119,4 +1181,5 @@ onBeforeUnmount(() => {
 .asset-center-foot .subtle{display:inline-flex;align-items:center;gap:4px}
 .asset-insight{margin-top:auto}
 @media (max-width:1200px){.asset-center-body{grid-template-columns:minmax(0,1fr)}}
+.idea-warn{color:#fbbf24}
 </style>
