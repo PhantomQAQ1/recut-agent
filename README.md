@@ -3,6 +3,7 @@
 AIGC 视频分镜与提示词工作台：把一句创意变成可直接投喂给即梦 / 可灵 / Runway 的镜头脚本，也能把一段素材反推成分镜。
 
 产品需求文档见 [docs/PRD.md](docs/PRD.md)（范围、功能状态、数据模型、路线图）。
+部署到魔搭创空间见 [docs/DEPLOY-modelscope.md](docs/DEPLOY-modelscope.md)（Docker 空间 + 持久化 + 环境变量）。
 
 ## 功能
 
@@ -124,6 +125,61 @@ GET    /api/v1/tags/{id}/characters
 - **绑定关系只信任前端**：模型返回的 `character_ids` 会被 `normalize_shot` 丢弃，不能让模型改写绑定
 - **锚点只提示不自动改写**：生成/展开/微调都会把锚点注入请求，但生成后若模型漏写，只标黄提示，不静默修改用户内容
 - **旧项目兼容**：`storyboard.anchors`（自由锚点）会自动迁移为 `extras`（项目补充词），注入行为不变
+
+## 部署
+
+镜像为多阶段构建：`node:20` 构建前端 → `python:3.12-slim` 运行后端，
+**同一个容器同时提供页面和 `/api`**（同源，登录 cookie 无需跨站配置）。
+监听端口固定 `7860`（可用 `PORT` 覆盖）。
+
+### 本地验证
+
+```powershell
+docker compose up --build      # 打开 http://127.0.0.1:7860
+```
+
+或手动：
+
+```powershell
+docker build -t recut-agent .
+docker run --rm -p 7860:7860 `
+  -e AUTH_BOOTSTRAP_EMAIL=you@example.com `
+  -e AUTH_BOOTSTRAP_PASSWORD=你的强密码 `
+  -e APP_COOKIE_SECURE=false `
+  recut-agent
+```
+
+### 魔搭创空间（ModelScope Studio）
+
+| 设置项 | 值 |
+|---|---|
+| 应用部署框架 | `docker` |
+| 云资源 | 免费 CPU（2vCPU / 8G）即可，模型走远程 API，不需要 GPU |
+| 监听端口 | `7860` |
+| 部署入口文件 | 仓库根目录的 `Dockerfile`（已提供） |
+
+在空间的环境变量里填：
+
+| 变量 | 说明 |
+|---|---|
+| `LLM_API_KEY` | 模型服务密钥（不填则生成接口返回 503） |
+| `LLM_BASE_URL` / `LLM_MODEL` | 默认 `https://api.deepseek.com/v1` / `deepseek-chat` |
+| `VISION_API_KEY` / `VISION_MODEL` | 视频/图片反推用，可留空 |
+| `APP_COOKIE_SECURE` | 创空间是 HTTPS，**必须设为 `true`** |
+| `AUTH_BOOTSTRAP_EMAIL` | 首个管理员的邮箱 |
+| `AUTH_BOOTSTRAP_PASSWORD` | 首个管理员的密码（≥10 位；登录后请立刻在界面里改掉） |
+
+> `AUTH_BOOTSTRAP_*` 只在**库中一个用户都没有**时生效，所以本地不填也不会误建账号。
+
+### ⚠️ 免费空间没有持久存储
+
+SQLite 数据库与用户上传的参考首帧都写在容器文件系统里，**空间休眠或重新部署后会清空**
+（账号、项目、角色资产、图片全部丢失，只有代码和配置保留）。
+
+因此这个平台适合做**演示站**，不适合长期使用。要真正持久化，需要二选一：
+
+- 换外部数据库（如 RDS / Neon / Supabase），把 `APP_DB_URL` 指过去，图片换对象存储
+- 换带持久卷的平台（Fly.io 卷、自有 VPS 挂目录）
 
 ## 已知限制
 

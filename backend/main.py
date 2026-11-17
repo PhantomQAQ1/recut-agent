@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 import assets
@@ -24,6 +27,8 @@ import deps
 import exports
 import media
 import projects
+import repositories
+import security
 import storyboard
 import uploads
 import vision
@@ -68,6 +73,7 @@ PROTECTED_PREFIXES = (
 async def lifespan(_: FastAPI):
     db.init_db()
     logger.info("数据库就绪：%s", db.database_path())
+    _bootstrap_admin()
     logger.info(
         "ReCut Agent API 启动 | LLM: %s (%s) | Vision: %s (%s)",
         "已配置" if settings.llm_ready else "未配置",
@@ -78,6 +84,33 @@ async def lifespan(_: FastAPI):
     if not settings.llm_ready:
         logger.warning("未检测到 LLM_API_KEY：生成接口将返回 503，前端会保留演示分镜")
     yield
+
+
+def _bootstrap_admin() -> None:
+    """部署环境没有终端，用环境变量创建第一个管理员。
+
+    只在库里**一个用户都没有**时生效，且账号密码必须由部署者显式提供，
+    所以不会在本地误建账号。密码比较敏感，登录后应立刻在界面里改掉。
+    """
+    email = (os.getenv("AUTH_BOOTSTRAP_EMAIL") or "").strip()
+    password = (os.getenv("AUTH_BOOTSTRAP_PASSWORD") or "").strip()
+    if not email or not password:
+        return
+    if repositories.list_users():
+        return
+
+    problem = security.password_problem(password)
+    if problem:
+        logger.error("AUTH_BOOTSTRAP_PASSWORD 不合规，已跳过初始管理员创建：%s", problem)
+        return
+
+    repositories.create_user(
+        email=email,
+        password_hash=security.hash_password(password),
+        display_name=(os.getenv("AUTH_BOOTSTRAP_NAME") or "管理员").strip(),
+        role="admin",
+    )
+    logger.info("已创建初始管理员 %s，请登录后立即修改密码", email)
 
 
 app = FastAPI(
@@ -243,3 +276,18 @@ async def refine_storyboard_shot(
         logger.warning("镜头微调失败（user=%s）：%s", user.id, exc)
         raise _http_error(exc) from exc
     return RefineResponse(shot=shot)
+
+
+# --------------------------------------------------------------------------- #
+# 生产环境：同一个容器同时提供前端静态文件
+# --------------------------------------------------------------------------- #
+# 必须挂载在根路径，前端才能和 /api 同源——登录 cookie 才不需要跨站配置。
+# 放在所有路由之后注册，Starlette 按注册顺序匹配，不会遮蔽 /api 接口。
+# 本地开发时 frontend/dist 通常不存在（或已过期），此段自动跳过，开发流程不变。
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if (_FRONTEND_DIST / "index.html").is_file():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+    logger.info("已挂载前端静态目录：%s", _FRONTEND_DIST)
+else:
+    logger.info("未找到 frontend/dist，仅提供 API（开发模式）")
