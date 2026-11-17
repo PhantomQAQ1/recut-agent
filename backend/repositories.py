@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 
 import db
-from errors import ConflictError
+from errors import ConflictError, VersionConflictError
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,7 @@ class Project:
     user_id: int
     name: str
     storyboard: dict[str, Any]
+    version: int
     created_at: datetime
     updated_at: datetime
 
@@ -69,6 +70,7 @@ class Project:
             "id": self.id,
             "name": self.name,
             "storyboard": self.storyboard,
+            "version": self.version,
             "created_at": db.to_iso(self.created_at),
             "updated_at": db.to_iso(self.updated_at),
         }
@@ -95,11 +97,13 @@ def _project_from_row(row) -> Project:
         storyboard = json.loads(row["storyboard"] or "{}")
     except json.JSONDecodeError:
         storyboard = {}
+    keys = row.keys()
     return Project(
         id=row["id"],
         user_id=row["user_id"],
         name=row["name"],
         storyboard=storyboard if isinstance(storyboard, dict) else {},
+        version=int(row["version"]) if "version" in keys and row["version"] is not None else 1,
         created_at=db.from_iso(row["created_at"]) or db.utcnow(),
         updated_at=db.from_iso(row["updated_at"]) or db.utcnow(),
     )
@@ -428,7 +432,13 @@ def update_project(
     *,
     name: str | None = None,
     storyboard: dict[str, Any] | None = None,
+    expected_version: int | None = None,
 ) -> Project | None:
+    """更新项目。
+
+    `expected_version` 给了就做乐观锁：版本不匹配抛 VersionConflictError（409），
+    这样两个标签页各自保存时不会互相静默覆盖。
+    """
     assignments: list[str] = []
     values: list[Any] = []
     if name is not None:
@@ -440,17 +450,27 @@ def update_project(
     if not assignments:
         return get_project(user_id, project_id)
 
-    assignments.append("updated_at = ?")
+    assignments.extend(["version = version + 1", "updated_at = ?"])
     values.append(db.now_iso())
-    values.extend([project_id, user_id])
+
+    where = "WHERE id = ? AND user_id = ?"
+    params = [*values, project_id, user_id]
+    if expected_version is not None:
+        where += " AND version = ?"
+        params.append(expected_version)
 
     with db.connect() as conn:
-        cursor = conn.execute(
-            f"UPDATE projects SET {', '.join(assignments)} WHERE id = ? AND user_id = ?",
-            values,
-        )
+        cursor = conn.execute(f"UPDATE projects SET {', '.join(assignments)} {where}", params)
         if cursor.rowcount == 0:
-            return None
+            current = conn.execute(
+                "SELECT version FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+            if current is None:
+                return None
+            raise VersionConflictError(
+                "该项目已被其他窗口修改，请刷新后重试", int(current["version"])
+            )
     return get_project(user_id, project_id)
 
 

@@ -10,7 +10,7 @@ import PlanPanel from './components/PlanPanel.vue'
 import RefineDialog from './components/RefineDialog.vue'
 import ExportDialog from './components/ExportDialog.vue'
 import CharacterPicker from './components/CharacterPicker.vue'
-import { api } from './api/client'
+import { ApiError, api } from './api/client'
 import { useAuth } from './composables/useAuth'
 import { useHistory } from './composables/useHistory'
 import { anchorTokens, mergeAnchors } from './lib/consistency'
@@ -578,9 +578,11 @@ type StoryboardDoc = {
 }
 
 const projectId = ref<number | null>(null)
+/** 当前项目的乐观锁版本号；保存时带回去，防止两个标签页互相覆盖。 */
+const projectVersion = ref<number>(1)
 const projectList = ref<ProjectSummary[]>([])
 const projectMenuOpen = ref(false)
-const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const saveState = ref<'idle' | 'saving' | 'saved' | 'error' | 'conflict'>('idle')
 const saveMessage = ref('')
 // 载入项目期间不要触发自动保存，否则会用旧数据覆盖刚打开的项目。
 let hydrating = false
@@ -638,10 +640,14 @@ async function refreshProjects() {
 async function openProject(id: number) {
   hydrating = true
   try {
-    const data = await api.get<{ id: number; name: string; storyboard: Partial<StoryboardDoc> }>(
-      `/api/v1/projects/${id}`,
-    )
+    const data = await api.get<{
+      id: number
+      name: string
+      version: number
+      storyboard: Partial<StoryboardDoc>
+    }>(`/api/v1/projects/${id}`)
     projectId.value = data.id
+    projectVersion.value = data.version ?? 1
     project.value = data.name
     applyStoryboard(data.storyboard)
     saveState.value = 'saved'
@@ -705,10 +711,21 @@ async function manualSave() {
     notify('项目还没保存过，稍后再试')
     return
   }
+  if (saveState.value === 'conflict') {
+    notify('有保存冲突，请先点「加载最新版本」')
+    return
+  }
   window.clearTimeout(saveTimer)
   saveTimer = undefined
   await persistProject()
   notify(saveState.value === 'saved' ? '已保存' : '保存失败，请检查网络')
+}
+
+/** 冲突后放弃本地改动，拉取服务器上的最新版本。 */
+async function reloadProject() {
+  if (projectId.value === null) return
+  await openProject(projectId.value)
+  if (saveState.value === 'saved') notify('已载入服务器上的最新版本')
 }
 
 /** 还有没写完的保存时，关页面前提醒一下。 */
@@ -720,6 +737,7 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
 
 function scheduleSave() {
   if (!isAuthenticated.value || hydrating || projectId.value === null) return
+  if (saveState.value === 'conflict') return
   window.clearTimeout(saveTimer)
   saveState.value = 'saving'
   saveTimer = window.setTimeout(persistProject, 1200)
@@ -728,16 +746,28 @@ function scheduleSave() {
 async function persistProject() {
   const id = projectId.value
   if (id === null || !isAuthenticated.value) return
+  // 冲突未解决前不再自动写，否则每次编辑都会重复触发 409
+  if (saveState.value === 'conflict') return
   window.clearTimeout(saveTimer)
   saveTimer = undefined
   try {
-    await api.put(`/api/v1/projects/${id}`, {
+    const updated = await api.put<{ version: number }>(`/api/v1/projects/${id}`, {
       name: project.value.trim() || '未命名项目',
       storyboard: storyboardDoc(),
+      expected_version: projectVersion.value,
     })
+    projectVersion.value = updated.version ?? projectVersion.value + 1
     saveState.value = 'saved'
     saveMessage.value = '刚刚'
   } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      const current = error.data.current_version
+      saveState.value = 'conflict'
+      saveMessage.value =
+        typeof current === 'number' ? `服务器已是 v${current}` : '已被其他窗口修改'
+      notify('该项目已被其他窗口修改，自动保存已暂停')
+      return
+    }
     saveState.value = 'error'
     saveMessage.value = error instanceof Error ? error.message : '保存失败'
   }
@@ -745,6 +775,7 @@ async function persistProject() {
 
 const saveLabel = computed(() => {
   if (!isAuthenticated.value) return '未登录 · 改动不会保存'
+  if (saveState.value === 'conflict') return `保存冲突：${saveMessage.value}`
   if (saveState.value === 'saving') return '保存中…'
   if (saveState.value === 'error') return `保存失败：${saveMessage.value}`
   return `已保存 · ${saveMessage.value || '刚刚'}`
@@ -766,6 +797,7 @@ async function syncProjects() {
     })
     await refreshProjects()
     projectId.value = created.id
+    projectVersion.value = 1
     saveState.value = 'saved'
     saveMessage.value = '刚刚'
   } else if (projectId.value === null) {
@@ -953,7 +985,7 @@ onBeforeUnmount(() => {
     <StoryboardStrip :shots="shots" :active-index="activeShotIndex" @select="scrollToShot" />
   </template>
 </template>
-<footer class="canvas-footer"><span>{{ saveLabel }}</span><span>所有更改均已同步 <Check :size="12" /></span></footer>
+<footer class="canvas-footer"><span>{{ saveLabel }}</span><button v-if="saveState === 'conflict'" class="conflict-reload" type="button" @click="reloadProject">加载最新版本</button><span v-else>所有更改均已同步 <Check :size="12" /></span></footer>
       </main>
     </div><AssetCenter v-if="assetCenterOpen" @close="assetCenterOpen = false" @create="openEditor(null)" @edit="openEditor" @remove="removeCharacter" /><CharacterPicker v-if="bindingShot" :characters="assetCharacters" :selected="bindingShot.character_ids ?? []" :prompt="`${bindingShot.prompt}\n${bindingShot.runwayPrompt}`" @apply="applyBinding" @close="bindingShot = null" /><CharacterEditor v-if="editorOpen" :character="editingCharacter" :tags="assetTags" :saving="savingCharacter" :error="editorError" :create-tag="createTagFromEditor" @close="closeEditor" @save="saveCharacter" /><RefineDialog v-if="refineCandidate" :before="refineCandidate.before" :after="refineCandidate.after" :instruction="refineCandidate.instruction" @apply="applyRefine" @cancel="cancelRefine" /><ExportDialog v-if="exportOpen" :shots="shots" :project-name="project" :model="model" :busy="exporting" @close="exportOpen = false" @export="runExport" /><input ref="referenceInput" class="hidden-file" type="file" accept="image/png,image/jpeg,image/webp" @change="onReferenceSelected" /><LoginDialog v-if="!user && !bootstrapping" /><Transition><div v-if="toast" class="toast"><span><Check :size="14" /></span>{{ toast }}</div></Transition>
   </div>
@@ -1182,4 +1214,6 @@ onBeforeUnmount(() => {
 .asset-insight{margin-top:auto}
 @media (max-width:1200px){.asset-center-body{grid-template-columns:minmax(0,1fr)}}
 .idea-warn{color:#fbbf24}
+.conflict-reload{padding:4px 10px;border:1px solid #7f5f18;border-radius:999px;background:#2a1f0a;color:#fbbf24;font-size:9px}
+.conflict-reload:hover{background:#3d2c0d}
 </style>

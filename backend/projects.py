@@ -29,6 +29,8 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     storyboard: dict[str, Any] | None = None
+    # 传了就做乐观锁：版本不匹配返回 409 并带上 current_version
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 def _check_storyboard(storyboard: dict[str, Any] | None) -> None:
@@ -74,7 +76,11 @@ def update_project(
     _check_storyboard(payload.storyboard)
     name = payload.name.strip() if payload.name is not None else None
     project = repo.update_project(
-        user.id, project_id, name=name, storyboard=payload.storyboard
+        user.id,
+        project_id,
+        name=name,
+        storyboard=payload.storyboard,
+        expected_version=payload.expected_version,
     )
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS projects (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name       TEXT    NOT NULL,
     storyboard TEXT    NOT NULL DEFAULT '{}',
+    version    INTEGER NOT NULL DEFAULT 1,
     created_at TEXT    NOT NULL,
     updated_at TEXT    NOT NULL
 );
@@ -198,9 +199,14 @@ def init_db() -> None:
 
 def _migrate() -> None:
     with connect() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
-        if "assets_seeded_at" not in columns:
+        user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+        if "assets_seeded_at" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN assets_seeded_at TEXT")
+
+        project_columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+        if "version" not in project_columns:
+            # 老库补 version 列；ADD COLUMN 的常量默认值会把已有行一起填成 1
+            conn.execute("ALTER TABLE projects ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
 
 
 # --------------------------------------------------------------------------- #

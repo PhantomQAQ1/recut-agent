@@ -123,6 +123,53 @@ def test_other_users_project_is_invisible(alice, bob):
     assert alice.get(f"/api/v1/projects/{project_id}").status_code == 200
 
 
+def test_project_version_is_returned_and_bumped(alice):
+    created = alice.post("/api/v1/projects", json={"name": "版本测试"}).json()
+    assert created["version"] == 1
+
+    updated = alice.put(
+        f"/api/v1/projects/{created['id']}",
+        json={"name": "版本测试 v2", "expected_version": 1},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+
+    fetched = alice.get(f"/api/v1/projects/{created['id']}")
+    assert fetched.json()["version"] == 2
+
+
+def test_stale_project_version_is_rejected(alice):
+    created = alice.post("/api/v1/projects", json={"name": "冲突测试"}).json()
+    project_id = created["id"]
+
+    first = alice.put(
+        f"/api/v1/projects/{project_id}",
+        json={"storyboard": {"style": "第一次"}, "expected_version": 1},
+    )
+    assert first.status_code == 200
+
+    # 拿旧版本再写一次：必须 409，并且带回当前版本号
+    stale = alice.put(
+        f"/api/v1/projects/{project_id}",
+        json={"storyboard": {"style": "基于旧版本"}, "expected_version": 1},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["current_version"] == 2
+
+    # 冲突的那次写入不能生效
+    assert alice.get(f"/api/v1/projects/{project_id}").json()["storyboard"]["style"] == "第一次"
+
+
+def test_project_update_without_version_still_works(alice):
+    """不带 expected_version 时保持旧行为，避免老客户端直接报错。"""
+    created = alice.post("/api/v1/projects", json={"name": "兼容测试"}).json()
+    response = alice.put(
+        f"/api/v1/projects/{created['id']}", json={"name": "兼容测试 v2"}
+    )
+    assert response.status_code == 200
+    assert response.json()["version"] == 2
+
+
 def test_storyboard_size_limit(alice):
     oversized = {"shots": [], "blob": "x" * (513 * 1024)}
     response = alice.post("/api/v1/projects", json={"name": "超大项目", "storyboard": oversized})
