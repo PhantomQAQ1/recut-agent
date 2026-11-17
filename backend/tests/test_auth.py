@@ -209,3 +209,43 @@ def test_expired_session_is_rejected(client):
     fresh = TestClient(main.app)
     fresh.cookies.set("recut_session", client.cookies.get("recut_session"))
     assert fresh.get("/api/v1/auth/me").status_code == 401
+
+
+def test_foreign_origin_is_rejected(client):
+    """跨站 Origin 必须挡住：这是 Cookie 鉴权之外的 CSRF 防线。"""
+    make_user("origin-blocked@example.com")
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "origin-blocked@example.com", "password": PASSWORD},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert response.status_code == 403
+
+
+def test_same_origin_is_allowed_without_allowlist(client):
+    """部署到陌生域名时，同源请求不该被白名单误伤。
+
+    白名单默认只有 localhost:5173；魔搭创空间这类新域名靠"Origin == 本请求 host"放行。
+    """
+    make_user("origin-same@example.com")
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "origin-same@example.com", "password": PASSWORD},
+        headers={"Origin": "http://testserver"},
+    )
+    assert response.status_code == 200
+
+
+def test_same_origin_behind_proxy_is_allowed(client):
+    """反向代理场景：Origin 与 X-Forwarded-Host 一致时也应放行。"""
+    make_user("origin-proxy@example.com")
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "origin-proxy@example.com", "password": PASSWORD},
+        headers={
+            "Origin": "https://demo.ms.show",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "demo.ms.show",
+        },
+    )
+    assert response.status_code == 200

@@ -95,7 +95,7 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 | 变量 | 说明 |
 |---|---|
 | `APP_ROOT_PATH` | **打开空间地址返回 `{"detail":"Not Found"}` 时填这个**。有些平台不剥掉访问前缀（形如 `/studios/<用户>/<空间名>/`），把前缀原样填进来（结尾不要带斜杠），路由才会按根路径匹配；平台已剥前缀时留空 |
-| `APP_ALLOWED_ORIGINS` | 同源部署一般不需要；如果前端独立域名，填它的 origin |
+| `APP_ALLOWED_ORIGINS` | 一般**不需要**填：同源请求会自动放行（Origin 与本请求 host 一致）。只有前端独立部署在别的域名时才填，逗号分隔 |
 | `MAX_FRAMES` | 逆向解析抽帧数，默认 6 |
 | `PORT` | 默认 7860，一般不用改 |
 
@@ -135,6 +135,7 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 
 | 现象 | 可能原因 | 处理 |
 |---|---|---|
+| 登录时提示「请求来源不被允许」（403） | 部署域名不在 `APP_ALLOWED_ORIGINS` 白名单。旧版代码只放行 localhost | 加 `APP_ALLOWED_ORIGINS=https://<你的空间域名>` 并重启；新版代码已改为同源自动放行 |
 | 打开空间返回 `{"detail":"Not Found"}`，但 `/api/health` 正常 | 前端产物没进镜像 | 看构建日志里有没有 `COPY --from=frontend /build/dist`；确认第一阶段 `npm run build` 成功 |
 | 打开空间返回 `{"detail":"Not Found"}`，`/api/health` 也是 404 | 平台没有剥掉访问前缀 | 设置 `APP_ROOT_PATH=/studios/<用户>/<空间名>` 后重启 |
 | 部署成功但页面 404 | 前端没构建出来 | 看构建日志是否有 `npm run build` 失败；确认 `frontend/package-lock.json` 在仓库里（`npm ci` 需要它） |

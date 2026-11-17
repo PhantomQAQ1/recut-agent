@@ -35,7 +35,17 @@ def verify_origin(request: Request) -> None:
     if not origin:
         return
     if origin not in {item.rstrip("/") for item in settings.allowed_origins}:
-        raise HTTPException(status_code=403, detail="请求来源不被允许")
+        # 同源请求一律放行：Origin 与这次请求自己的 scheme+host 一致时，
+        # 说明请求就是本页面发出的，不可能是跨站伪造。
+        # 这样部署到任意域名（例如魔搭创空间的 xxx.ms.show）都不用再配白名单。
+        proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip() or request.url.scheme
+        host = (
+            (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+            or request.headers.get("host")
+            or ""
+        )
+        if not (host and origin == f"{proto}://{host}".rstrip("/")):
+            raise HTTPException(status_code=403, detail="请求来源不被允许")
 
 
 def session_token(request: Request) -> str | None:
