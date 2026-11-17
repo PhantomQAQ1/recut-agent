@@ -90,6 +90,7 @@ class PlannedShot(BaseModel):
     lens: str
     move: str
     purpose: str = ""
+    agent_shot: Shot | None = None
 
 
 class ShotPlan(BaseModel):

@@ -26,6 +26,7 @@ import data_port
 import db
 import deps
 import exports
+import forward_adapter
 import media
 import projects
 import repositories
@@ -243,12 +244,13 @@ async def generate_storyboard(
 ) -> GenerateResponse:
     """创意 → 分镜脚本。"""
     try:
-        shots = await storyboard.generate_shots(request)
+        plan, demo = await forward_adapter.agent_plan(request)
+        shots = [item.agent_shot for item in plan.shots if item.agent_shot is not None]
     except AppError as exc:
         logger.warning("生成分镜失败（user=%s）：%s", user.id, exc)
         raise _http_error(exc) from exc
     logger.info("生成分镜成功：user=%s, %d 个镜头", user.id, len(shots))
-    return GenerateResponse(shots=shots)
+    return GenerateResponse(shots=shots, source="demo" if demo else "llm", warning="演示数据：固定示例，未调用模型" if demo else None)
 
 
 @app.post("/api/v1/storyboard/reverse", response_model=GenerateResponse)
@@ -283,7 +285,7 @@ async def plan_storyboard(
 ) -> PlanResponse:
     """B4 阶段一：只生成镜头计划（不含提示词）。"""
     try:
-        plan = await storyboard.plan_story(request)
+        plan, _ = await forward_adapter.agent_plan(request)
     except AppError as exc:
         logger.warning("生成镜头计划失败（user=%s）：%s", user.id, exc)
         raise _http_error(exc) from exc
@@ -297,7 +299,11 @@ async def expand_storyboard_shot(
 ) -> ExpandShotResponse:
     """B4 阶段二：把计划中的某一镜展开成完整分镜（前端并发调用）。"""
     try:
-        shot = await storyboard.expand_shot(payload)
+        selected = next((item for item in payload.plan.shots if item.index == payload.index), None)
+        if selected and selected.agent_shot:
+            shot = selected.agent_shot.model_copy(update={"id": selected.index, "duration": selected.duration, "scale": selected.scale, "lens": selected.lens, "move": selected.move})
+        else:
+            shot = await storyboard.expand_shot(payload)
     except AppError as exc:
         logger.warning("展开第 %s 镜失败（user=%s）：%s", payload.index, user.id, exc)
         raise _http_error(exc) from exc

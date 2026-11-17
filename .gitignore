@@ -23,3 +23,6 @@ backend/uploads/
 .wheels/
 *.log
 *.zip
+
+# DSH 沙盒恢复日志
+_dsh_acl_recovery/

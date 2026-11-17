@@ -56,6 +56,9 @@ export const MOVE_OPTIONS = [
   '环绕跟拍 Orbit',
   '急速推镜 Crash Zoom',
   '低机位升格 Low angle',
+  '缓慢拉远 Pull out',
+  '横向摇镜 Pan',
+  '升降机位 Crane',
 ] as const
 
 /** B4 阶段一的镜头计划（与后端 ShotPlan 对应）。 */
