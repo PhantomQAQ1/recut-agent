@@ -94,14 +94,26 @@ def _bootstrap_admin() -> None:
     """
     email = (os.getenv("AUTH_BOOTSTRAP_EMAIL") or "").strip()
     password = (os.getenv("AUTH_BOOTSTRAP_PASSWORD") or "").strip()
+    already_has_users = bool(repositories.list_users())
+
     if not email or not password:
+        if not already_has_users:
+            # 这条最容易踩：没配变量 → 库里没有任何账号 → 登录永远报"邮箱或密码不正确"
+            logger.warning(
+                "库里还没有任何账号，且未设置 AUTH_BOOTSTRAP_EMAIL / AUTH_BOOTSTRAP_PASSWORD："
+                "当前没有任何账号可以登录"
+            )
         return
-    if repositories.list_users():
+    if already_has_users:
         return
 
     problem = security.password_problem(password)
     if problem:
-        logger.error("AUTH_BOOTSTRAP_PASSWORD 不合规，已跳过初始管理员创建：%s", problem)
+        logger.error(
+            "AUTH_BOOTSTRAP_PASSWORD 不合规，已跳过初始管理员创建（%s）；"
+            "当前没有任何账号可以登录，请修正后重启",
+            problem,
+        )
         return
 
     repositories.create_user(
