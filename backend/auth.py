@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 import db
@@ -38,6 +38,12 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=1, max_length=256)
 
 
+class SetupRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+    display_name: str | None = Field(default=None, max_length=40)
+
+
 def set_session_cookie(response: Response, token: str, *, remember: bool) -> None:
     """记住我 → 带 Max-Age 的持久 cookie；否则是浏览器会话 cookie。
 
@@ -66,6 +72,54 @@ def clear_session_cookie(response: Response) -> None:
 
 def _locked_message() -> str:
     return f"账号已被临时锁定，请 {settings.lockout_minutes} 分钟后再试，或联系管理员解锁"
+
+
+@router.get("/bootstrap")
+def bootstrap_status() -> dict[str, object]:
+    """前端据此决定显示"登录"还是"创建管理员"。"""
+    return {"initialized": bool(repo.list_users())}
+
+
+@router.post("/setup", status_code=201, dependencies=[Depends(verify_origin)])
+def setup(payload: SetupRequest, request: Request, response: Response) -> dict[str, object]:
+    """创建**第一个**管理员。
+
+    只在库里一个账号都没有时可用；一旦有账号就永久关闭（返回 409），
+    避免部署后被人抢先注册。建完直接返回登录态，省掉再登一次。
+    """
+    if repo.list_users():
+        raise HTTPException(status_code=409, detail="系统已初始化，无法再次创建管理员")
+
+    problem = security.password_problem(payload.password)
+    if problem:
+        raise ValidationRejected(problem)
+
+    email = repo.normalize_email(payload.email)
+    if "@" not in email:
+        raise ValidationRejected("邮箱格式不正确")
+
+    user = repo.create_user(
+        email=email,
+        password_hash=security.hash_password(payload.password),
+        display_name=(payload.display_name or "管理员").strip() or "管理员",
+        role="admin",
+    )
+
+    token = security.new_session_token()
+    digest = security.token_digest(token)
+    expires_at = db.in_hours(settings.session_ttl_hours)
+    ip = client_ip(request)
+    repo.create_session(
+        digest=digest,
+        user_id=user.id,
+        expires_at=expires_at,
+        remember=False,
+        ip=ip,
+        user_agent=request.headers.get("user-agent"),
+    )
+    repo.record_attempt(email=email, ip=ip, success=True, reason="setup")
+    set_session_cookie(response, token, remember=False)
+    return {"user": user.public(), "expires_at": expires_at}
 
 
 @router.post("/login", dependencies=[Depends(verify_origin)])

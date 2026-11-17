@@ -76,8 +76,27 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 | `APP_DB_URL` | `sqlite:////mnt/workspace/data/recut.db` | **注意四个斜杠**：`sqlite:///` + 绝对路径 `/mnt/...`。指向持久卷，否则重启即清库 |
 | `APP_UPLOAD_DIR` | `/mnt/workspace/uploads` | 参考首帧图片，同样必须放持久卷 |
 | `APP_COOKIE_SECURE` | `true` | 创空间是 HTTPS，cookie 必须带 Secure 才会被浏览器发送 |
-| `AUTH_BOOTSTRAP_EMAIL` | 你的邮箱 | 首次启动创建管理员 |
-| `AUTH_BOOTSTRAP_PASSWORD` | 强密码 | 登录后**立即在界面里改掉** |
+
+### 第一个管理员：两种方式，任选其一
+
+**方式 A（推荐）：页面初始化** —— 不需要任何环境变量。
+
+部署完成后打开空间，如果库里没有任何账号，登录页会自动变成「首次初始化」表单，
+填邮箱 + 至少 10 位密码即可创建管理员并直接登录。**创建成功后该入口永久关闭**（再调返回 409）。
+
+> 安全提醒：初始化入口是匿名可访问的。空间是公开的话，建议先设为私密、建完号再公开，
+> 或者用方式 B 的固定账号。
+
+**方式 B：环境变量建号** —— 适合不希望开放初始化入口的场景。
+
+| 变量 | 说明 |
+|---|---|
+| `AUTH_BOOTSTRAP_EMAIL` | 首个管理员邮箱 |
+| `AUTH_BOOTSTRAP_PASSWORD` | **至少 10 位**，首尾不能有空格 |
+| `AUTH_BOOTSTRAP_NAME` | 显示名，可选 |
+
+只在库里一个账号都没有时生效。配好后**必须重启**。
+
 
 ### 生成能力（不填则生成接口 503，其余功能正常）
 
@@ -120,45 +139,37 @@ https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空�
 
 ```
 1. 推送代码
-2. 配置环境变量（第 3 节）
+2. 配置环境变量（第 3 节：数据库 / 上传 / cookie 三项必填，建号可跳过）
 3. 点「上线」/「立即发布」
 4. 看构建日志：npm ci → npm run build → pip install → 启动 uvicorn
-5. 访问空间地址 → 用 AUTH_BOOTSTRAP_EMAIL 登录
-6. 改密码（用户菜单 → 修改密码）
-7. 把 AUTH_BOOTSTRAP_PASSWORD 从环境变量里删掉并重启
-   （该变量只在"库里一个用户都没有"时生效，但删掉更干净）
+5. 打开空间地址 → 若显示「首次初始化」，直接创建管理员（推荐）
+6. 建完就能用；之后想改密码走用户菜单
 ```
 
-### 登录报「邮箱或密码不正确」的三种原因
+### 登录报「邮箱或密码不正确」怎么排查
 
-这是新部署最常见的问题。**最快的判断方式是打开自检接口**：
+**先看自检接口**：
 
 ```
 https://<你的空间域名>/api/bootstrap
 ```
 
-返回示例：
-
-```json
-{"users": 0, "bootstrap_configured": false, "db_path": "/app/backend/recut.db", "hint": "..."}
-```
-
 | `users` | `bootstrap_configured` | 含义 | 处理 |
 |---|---|---|---|
-| 0 | false | 两个变量都没配 | 补上 `AUTH_BOOTSTRAP_EMAIL` / `AUTH_BOOTSTRAP_PASSWORD` 后重启 |
+| 0 | false | 没有账号，也没配变量 | 用页面「首次初始化」建号，或配 `AUTH_BOOTSTRAP_*` 后重启 |
 | 0 | true | 配了但没建成 | 密码**至少 10 位**、首尾不能有空格；或改了变量没重启 |
-| ≥1 | — | 账号已存在 | 邮箱/密码记错；用 `scripts/manage_user.py list` 查看，或 `passwd` 重置 |
+| ≥1 | — | 账号已存在 | 邮箱/密码记错；用 `scripts/manage_user.py passwd` 重置 |
 
-`db_path` 顺便还能验证持久化是否生效：指向 `/mnt/workspace/...` 才说明数据能留存。
+`db_path` 顺便能验证持久化：指向 `/mnt/workspace/...` 才说明数据能留存。
 
-建号成功的日志是：
+建号成功的日志：
 
 ```
 INFO [recut] 已创建初始管理员 you@example.com，请登录后立即修改密码
 ```
 
 > 注意：如果没配 `APP_DB_URL` 指向 `/mnt/workspace`，每次重启数据库都会重建，
-> 建号逻辑也会**重新执行**——看起来能用，但上次注册的账号和数据都会消失。
+> 初始化入口会**重新出现**——看起来能用，但上次的数据都会消失。
 
 ---
 

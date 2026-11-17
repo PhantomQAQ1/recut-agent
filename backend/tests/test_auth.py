@@ -259,3 +259,39 @@ def test_bootstrap_status_exposes_counts_without_credentials(client):
     assert isinstance(data["bootstrap_configured"], bool)
     assert "password" not in str(data).lower() or "AUTH_BOOTSTRAP_PASSWORD" in data["hint"]
     assert "bootstrap_configured" in data
+
+
+def test_setup_creates_first_admin_then_closes(client):
+    """空库时可以用 /setup 建首个管理员；建完入口永久关闭。
+
+    注意：这个用例会清空用户表，所以放在文件末尾，避免影响其他用例。
+    """
+    with db.connect() as conn:
+        conn.execute("DELETE FROM users")
+
+    assert client.get("/api/v1/auth/bootstrap").json()["initialized"] is False
+
+    weak = client.post(
+        "/api/v1/auth/setup", json={"email": "first@example.com", "password": "short"}
+    )
+    assert weak.status_code == 422
+
+    created = client.post(
+        "/api/v1/auth/setup",
+        json={
+            "email": "first@example.com",
+            "password": "first-admin-password",
+            "display_name": "首个管理员",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["user"]["role"] == "admin"
+    # 建号即登录
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+    # 已经有账号了，入口必须关闭
+    again = client.post(
+        "/api/v1/auth/setup",
+        json={"email": "second@example.com", "password": "another-strong-password"},
+    )
+    assert again.status_code == 409

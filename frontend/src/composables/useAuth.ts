@@ -19,13 +19,46 @@ const user = ref<AuthUser | null>(null)
 const bootstrapping = ref(true)
 const loggingIn = ref(false)
 const loginError = ref('')
+/** 库里还没有任何账号 → 登录页改成"创建管理员"。 */
+const needsSetup = ref(false)
 
 const isAuthenticated = computed(() => user.value !== null)
 
-// 业务接口返回 401 时统一回到登录态；故事板内容由调用方保留。
+/** 业务接口返回 401 时统一回到登录态；故事板内容由调用方保留。 */
 setUnauthorizedHandler(() => {
   user.value = null
 })
+
+async function checkSetup(): Promise<void> {
+  try {
+    const data = await api.get<{ initialized: boolean }>('/api/v1/auth/bootstrap')
+    needsSetup.value = !data.initialized
+  } catch {
+    // 查不到就按"已初始化"处理，避免把正常登录页换成初始化表单
+    needsSetup.value = false
+  }
+}
+
+async function setup(email: string, password: string, displayName?: string): Promise<boolean> {
+  if (loggingIn.value) return false
+  loggingIn.value = true
+  loginError.value = ''
+  try {
+    const data = await api.post<{ user: AuthUser }>('/api/v1/auth/setup', {
+      email,
+      password,
+      display_name: displayName || null,
+    })
+    user.value = data.user
+    needsSetup.value = false
+    return true
+  } catch (error) {
+    loginError.value = error instanceof Error ? error.message : '创建管理员失败，请稍后重试'
+    return false
+  } finally {
+    loggingIn.value = false
+  }
+}
 
 async function bootstrap(): Promise<void> {
   bootstrapping.value = true
@@ -38,6 +71,7 @@ async function bootstrap(): Promise<void> {
     if (!(error instanceof ApiError && error.status === 401)) {
       loginError.value = error instanceof Error ? error.message : ''
     }
+    await checkSetup()
   } finally {
     bootstrapping.value = false
   }
@@ -80,7 +114,10 @@ export function useAuth() {
     bootstrapping,
     loggingIn,
     loginError,
+    needsSetup,
     login,
+    setup,
+    checkSetup,
     logout,
     bootstrap,
   }
