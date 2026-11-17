@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 import assets
 import auth
+import data_port
 import db
 import deps
 import exports
@@ -161,6 +162,7 @@ app.include_router(projects.router)
 app.include_router(assets.router)
 app.include_router(uploads.router)
 app.include_router(exports.router)
+app.include_router(data_port.router)
 
 
 def _http_error(exc: AppError) -> HTTPException:
