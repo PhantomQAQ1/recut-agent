@@ -30,6 +30,7 @@ import forward_adapter
 import media
 import projects
 import repositories
+import reverse_mcp
 import security
 import storyboard
 import uploads
@@ -260,22 +261,36 @@ async def reverse_storyboard(
     anchors: str = Form("", description="逗号分隔的角色一致性锚点"),
     user=Depends(require_user),
 ) -> GenerateResponse:
-    """视频 / 图片 → 分镜脚本（关键帧理解 + 视听语言反推）。"""
+    """视频 / 图片 → 分镜脚本（关键帧理解 + 视听语言反推）。
+
+    `REVERSE_ENGINE=mcp` 时优先走 reverse-storyboard-mcp：本地先按硬切分镜，
+    再逐镜做证据式视觉分析；否则沿用原有的单次多帧分析。
+    """
     anchor_list = [item.strip() for item in anchors.replace("，", ",").split(",") if item.strip()]
     saved: media.SavedUpload | None = None
+    engine = "builtin"
     try:
         saved = await media.save_upload(file)
-        duration = media.probe_duration(media.ffmpeg_exe(), saved.path) if saved.is_video else None
-        frames = media.extract_keyframes(saved)
-        context = media.describe_frames(len(frames), duration)
-        shots = await vision.analyze_frames(frames, anchor_list, model, context=context)
+        if saved.is_video and reverse_mcp.enabled():
+            available, missing = reverse_mcp.availability()
+            if available:
+                engine = "mcp"
+            else:
+                logger.warning("逆向 Agent 不可用（缺少 %s），回退到内置解析", "、".join(missing))
+        if engine == "mcp":
+            shots = await reverse_mcp.analyze_video(saved.path, anchors=anchor_list)
+        else:
+            duration = media.probe_duration(media.ffmpeg_exe(), saved.path) if saved.is_video else None
+            frames = media.extract_keyframes(saved)
+            context = media.describe_frames(len(frames), duration)
+            shots = await vision.analyze_frames(frames, anchor_list, model, context=context)
     except AppError as exc:
         logger.warning("解析素材失败（user=%s）：%s", user.id, exc)
         raise _http_error(exc) from exc
     finally:
         if saved is not None:
             saved.cleanup()
-    logger.info("解析素材成功：user=%s, %d 个镜头", user.id, len(shots))
+    logger.info("解析素材成功：user=%s, %d 个镜头, engine=%s", user.id, len(shots), engine)
     return GenerateResponse(shots=shots)
 
 

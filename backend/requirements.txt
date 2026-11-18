@@ -6,5 +6,10 @@ python-multipart>=0.0.9
 openai>=1.50.0,<4.0.0
 imageio-ffmpeg>=0.5.1
 
+# REVERSE_ENGINE=mcp 时逆向 Agent 以库方式调用所需依赖
+Pillow>=10,<13
+numpy>=1.26,<3
+httpx>=0.27,<1
+
 # 开发 / 测试
 pytest>=8.0

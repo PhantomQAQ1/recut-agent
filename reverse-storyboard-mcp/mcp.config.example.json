@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "reverse-storyboard": {
+      "command": "E:\\hks-AIGC-video\\reverse-storyboard-mcp\\.venv\\Scripts\\reverse-storyboard-mcp.exe",
+      "env": {
+        "STORYBOARD_MEDIA_ROOTS": "E:\\hks-AIGC-video\\reverse-storyboard-mcp\\media",
+        "STORYBOARD_DATA_DIR": "E:\\hks-AIGC-video\\reverse-storyboard-mcp\\data"
+      }
+    }
+  }
+}

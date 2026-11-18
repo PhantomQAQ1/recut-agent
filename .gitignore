@@ -26,3 +26,6 @@ backend/uploads/
 
 # DSH 沙盒恢复日志
 _dsh_acl_recovery/
+/reverse-storyboard-mcp/pip-*/
+/reverse-storyboard-mcp/.storyboard-data/
+/reverse-storyboard-mcp/*.egg-info/
