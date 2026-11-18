@@ -22,7 +22,7 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
-from errors import UpstreamError
+from errors import MissingConfigError, UpstreamError
 from schemas import Shot, normalize_shot
 
 # 新包源码目录；若已 pip 安装则可省去 sys.path 注入
@@ -208,7 +208,10 @@ async def analyze_video(
     if not ok:
         raise UpstreamError(f"逆向 Agent 不可用，缺少依赖：{', '.join(missing)}")
     if not _configure_vision():
-        raise UpstreamError("逆向 Agent 需要视觉模型配置（VISION_* 或 STORYBOARD_VISION_*）")
+        # 和内置路径保持一致：缺少密钥属于「未配置」，返回 503 而非上游错误
+        raise MissingConfigError(
+            "逆向 Agent 需要视觉模型配置：请在 backend/.env 填写 VISION_API_KEY（或复用 LLM_API_KEY）"
+        )
 
     from reverse_storyboard import exports, media, vision  # noqa: PLC0415 - 延迟导入以便回退
 

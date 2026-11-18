@@ -101,7 +101,7 @@ def test_availability_reports_missing_modules(monkeypatch):
 
 def test_analyze_video_rejects_when_vision_not_configured(monkeypatch, tmp_path):
     """没有视觉模型配置时必须明确报错，不能伪造结果。"""
-    from errors import UpstreamError
+    from errors import MissingConfigError
 
     monkeypatch.setenv("REVERSE_ENGINE", "mcp")
     # settings 是 frozen dataclass，直接替换配置探测函数更稳妥
@@ -112,5 +112,5 @@ def test_analyze_video_rejects_when_vision_not_configured(monkeypatch, tmp_path)
 
     import asyncio
 
-    with pytest.raises(UpstreamError):
+    with pytest.raises(MissingConfigError):
         asyncio.run(reverse_mcp.analyze_video(video))
