@@ -59,6 +59,40 @@ REVERSE_MAX_SHOTS=8
 MAX_UPLOAD_MB=200
 ```
 
+## 五之二、创空间部署 JSON（设置页的「JSON 配置」）
+
+新版设置页用一份部署描述文件管理，环境变量写在 `environment_variables` 数组里
+（字段定义见 `https://www.modelscope.cn/api/v1/studios/deploy_schema.json`）。
+直接整段替换：
+
+```json
+{
+  "$schema": "https://www.modelscope.cn/api/v1/studios/deploy_schema.json",
+  "sdk_type": "docker",
+  "resource_configuration": "platform/2v-cpu-16g-mem",
+  "port": 7860,
+  "environment_variables": [
+    { "name": "LLM_API_KEY", "value": "ms-你的令牌" },
+    { "name": "LLM_BASE_URL", "value": "https://api-inference.modelscope.cn/v1" },
+    { "name": "LLM_MODEL", "value": "Qwen/Qwen3.5-27B" },
+    { "name": "VISION_MODEL", "value": "Qwen/Qwen3.5-35B-A3B" },
+    { "name": "APP_DB_URL", "value": "sqlite:////mnt/workspace/data/recut.db" },
+    { "name": "APP_UPLOAD_DIR", "value": "/mnt/workspace/uploads" },
+    { "name": "APP_COOKIE_SECURE", "value": "true" },
+    { "name": "REVERSE_ENGINE", "value": "builtin" },
+    { "name": "REVERSE_MAX_SHOTS", "value": "8" },
+    { "name": "MAX_UPLOAD_MB", "value": "200" }
+  ]
+}
+```
+
+注意：
+
+- `value` 必须是**字符串**，布尔和数字也要加引号
+- `resource_configuration` 的合法值只有 `platform/2v-cpu-16g-mem`（免费）和两个 `xgpu/*`；
+  如果原配置是 `platform/2v-cpu-8g-mem`，它不在 schema 枚举里，建议一并改成 16g
+- `port` 对 docker 类型必须正好是 `7860`，且不能是平台保留端口（5000/8080/9090 等）
+
 > 控制台是逐条 key/value 添加，不是粘贴整个文件；上面这块只用于和本地 `.env` 比对。
 > 密钥由控制台保存后**不可再查询**，粘贴前先确认复制正确。
 
