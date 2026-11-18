@@ -30,6 +30,9 @@ RUN python -m pip install --no-cache-dir \
         -r backend/requirements.txt
 
 COPY backend/ ./backend/
+# 逆向 Agent 以库方式调用，需要源码在镜像里与 backend 保持同级布局；
+# 没装 mcp SDK 也能用（只导入 media/vision/exports）
+COPY reverse-storyboard-mcp/src ./reverse-storyboard-mcp/src
 COPY --from=frontend /build/dist ./frontend/dist
 
 WORKDIR /app/backend
