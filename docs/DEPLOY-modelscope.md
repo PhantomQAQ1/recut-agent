@@ -63,6 +63,50 @@ git push modelscope main
 https://oauth2:<你的ACCESS_TOKEN>@www.modelscope.cn/studios/<用户名>/<空间名>.git
 ```
 
+### 2.3 ⚠️ master 是保护分支，不能 force push
+
+空间仓库默认分支是 **`master`** 且受保护，`--force` 会被拒：
+
+```
+remote: You are not allowed to force push code to a protected branch
+```
+
+正确做法：造一个「以 master 为父提交、树用本地代码」的提交，等同一次正常合入：
+
+```bash
+git fetch modelscope master
+commit=$(git commit-tree "$(git rev-parse 'main^{tree}')" -p FETCH_HEAD -m "chore(deploy): 同步最新代码")
+git push modelscope "$commit:master"
+```
+
+### 2.4 用 OpenAPI 配置变量并上线
+
+基础地址 `https://modelscope.cn/openapi/v1`，认证 `Authorization: Bearer <令牌>`：
+
+| 操作 | 请求 |
+|---|---|
+| 列明文变量 | `GET /studios/{o}/{r}/variables` |
+| 新增明文变量 | `POST /studios/{o}/{r}/variables`，body `{"key","value"}` |
+| 新增密钥 | `POST /studios/{o}/{r}/secrets`，body `{"key","value"}` |
+| 触发部署 | `POST /studios/{o}/{r}/deploy` |
+| 构建日志 | `GET /studios/{o}/{r}/logs/build` |
+| 运行日志 | `GET /studios/{o}/{r}/logs/run` |
+| 空间详情 | `GET /studios/{o}/{r}`（含 status） |
+
+`deploy` 后 `status` 依次为 `Building` → `Deploying` → `Running`。
+
+### 2.5 验证：匿名访问 403 是正常的
+
+空间页面 `https://<user>-<repo>.ms.show` 对**匿名访问返回魔搭自己的 403**
+（`Code:10011402001`），这不是应用故障。程序化验证要走专用 API 域名，
+令牌报错的提示信息里会给出完整地址：
+
+```
+https://studio-<user>-<repo>.api-inference.modelscope.net/api/health
+```
+
+期望 `{"status":"ok","llm":"configured","vision":"configured"}`。
+
 ---
 
 ## 3. 环境变量（关键）
