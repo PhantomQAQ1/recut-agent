@@ -12,7 +12,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
 
 from config import settings
 from errors import UpstreamError
-from llm import create_json_completion, vision_client
+from llm import create_json_completion, extract_json_object, vision_client
 from schemas import Shot, parse_shots_payload
 
 VISION_PROMPT = """你是影视视听语言分析师。用户给出一段视频按时间顺序抽取的关键帧（也可能是单张图片）。
@@ -100,7 +100,7 @@ async def analyze_frames(
 
         content = completion.choices[0].message.content or ""
         try:
-            return parse_shots_payload(json.loads(content), limit=len(frames))
+            return parse_shots_payload(extract_json_object(content), limit=len(frames))
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
             continue

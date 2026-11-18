@@ -11,7 +11,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
 
 from config import settings
 from errors import UpstreamError
-from llm import create_json_completion, text_client
+from llm import create_json_completion, extract_json_object, text_client
 from schemas import (
     ExpandShotRequest,
     GenerateRequest,
@@ -97,7 +97,7 @@ async def generate_shots(
         completion = await _complete(client, request, temperature)
         content = completion.choices[0].message.content or ""
         try:
-            shots = parse_shots_payload(json.loads(content))
+            shots = parse_shots_payload(extract_json_object(content))
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
             continue
@@ -208,7 +208,7 @@ async def plan_story(
             max_tokens=1500,
         )
         try:
-            return parse_plan_payload(json.loads(content))
+            return parse_plan_payload(extract_json_object(content))
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
             continue
@@ -253,7 +253,7 @@ async def expand_shot(
             temperature=temperature,
         )
         try:
-            shot = parse_single_shot(json.loads(content), payload.index)
+            shot = parse_single_shot(extract_json_object(content), payload.index)
             return shot.model_copy(update={"id": payload.index})
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
@@ -290,7 +290,7 @@ async def refine_shot(
             temperature=temperature,
         )
         try:
-            shot = parse_single_shot(json.loads(content), 1)
+            shot = parse_single_shot(extract_json_object(content), 1)
             # 保留原始 id，前端靠它定位是哪一格
             return shot.model_copy(update={"id": payload.shot.id})
         except (json.JSONDecodeError, ValueError) as exc:

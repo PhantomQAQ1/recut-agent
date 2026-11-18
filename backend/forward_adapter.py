@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from forward_agent import ForwardAgent, LLMError, Platform
 from forward_agent.provider import OpenAICompatProvider
 from config import settings
+from llm import extract_json_object
 from errors import UpstreamError
 from schemas import GenerateRequest, PlannedShot, ShotPlan, normalize_shot, Shot
 
@@ -32,57 +34,6 @@ def _move(value: object) -> str:
     return _MOVE_MAP.get(text, text or "固定机位 Static")
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """从模型输出里取出 JSON 对象。
-
-    不是所有服务商都支持 response_format 强制 JSON，模型可能包一层解释文字，
-    这里先按原样解析，失败再按括号配对截取第一个对象。
-    """
-    stripped = (text or "").strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:]
-        stripped = stripped.strip()
-    try:
-        data = json.loads(stripped)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError:
-        pass
-
-    start = stripped.find("{")
-    if start >= 0:
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(stripped)):
-            char = stripped[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        data = json.loads(stripped[start : index + 1])
-                    except json.JSONDecodeError:
-                        break
-                    if isinstance(data, dict):
-                        return data
-                    break
-    raise LLMError("UPSTREAM_SHAPE", (text or "")[:300])
-
-
 class _CompatProvider(OpenAICompatProvider):
     """官方 Provider 之上的兼容层，只做两件事：
 
@@ -91,7 +42,11 @@ class _CompatProvider(OpenAICompatProvider):
     2. 返回内容不是纯 JSON 时，从文本里截取第一个 JSON 对象。
     """
 
+    # 免费额度对突发请求敏感（魔搭 limit_burst_rate），用它做一次有界退避
+    _burst_retries = 0
+
     def _post(self, model: str, messages, temperature: float) -> dict[str, Any]:  # type: ignore[override]
+        self._burst_retries = 0
         base = {"model": model, "messages": messages, "temperature": temperature}
         for attempt in range(2):
             payload = dict(base)
@@ -119,12 +74,16 @@ class _CompatProvider(OpenAICompatProvider):
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = json.loads(response.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as exc:
-            raise LLMError(
-                "UPSTREAM_STATUS_%s" % exc.code,
-                exc.read().decode("utf-8", "replace")[:500],
-            ) from exc
+            detail = exc.read().decode("utf-8", "replace")[:500]
+            # 免费额度对突发请求敏感（魔搭 limit_burst_rate），退避后重试
+            if exc.code in {429, 503, 504} and self._burst_retries < 2:
+                self._burst_retries += 1
+                time.sleep(1.5 * self._burst_retries)
+                return self._request(payload)
+            raise LLMError("UPSTREAM_STATUS_%s" % exc.code, detail) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise LLMError("UPSTREAM_HTTP", str(exc)) from exc
+        self._burst_retries = 0
 
         try:
             content = body["choices"][0]["message"]["content"]
@@ -132,7 +91,7 @@ class _CompatProvider(OpenAICompatProvider):
             raise LLMError("UPSTREAM_SHAPE", json.dumps(body, ensure_ascii=False)[:500]) from exc
         if isinstance(content, dict):
             return content
-        return _extract_json(str(content))
+        return extract_json_object(str(content))
 
 
 def _build_agent() -> ForwardAgent:

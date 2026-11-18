@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from forward_adapter import _extract_json, _move, agent_plan
+from forward_adapter import _move, agent_plan
+import forward_adapter
+from llm import extract_json_object as _extract_json
 from schemas import GenerateRequest
 
 FRONTEND_MOVES = {
@@ -40,10 +42,29 @@ def test_extract_json_handles_wrapped_output():
     assert _extract_json('{"a": "}"}') == {"a": "}"}
 
 
-def test_agent_plan_without_key_is_marked_demo():
-    """没有模型 Key 时应走包内 Mock，并把"演示数据"标出来。"""
+def test_agent_plan_without_key_is_marked_demo(monkeypatch):
+    """没有模型 Key 时应走包内 Mock，并把"演示数据"标出来。
+
+    用桩替换模块级 settings，避免测试结果依赖本地 .env 里到底有没有真实 Key。
+    """
+
+    class _NoKeySettings:
+        llm_ready = False
+        llm_api_key = None
+        llm_base_url = "https://example.invalid/v1"
+        llm_model = "stub-model"
+        request_timeout = 5.0
+
+    monkeypatch.setattr(forward_adapter, "settings", _NoKeySettings())
+
     plan, demo = asyncio.run(
-        agent_plan(GenerateRequest(idea="一个人在便利店发现收银员是未来的自己", style="搞笑反转", model="可灵 Kling"))
+        agent_plan(
+            GenerateRequest(
+                idea="一个人在便利店发现收银员是未来的自己",
+                style="搞笑反转",
+                model="可灵 Kling",
+            )
+        )
     )
     assert demo is True
     assert plan.shots
