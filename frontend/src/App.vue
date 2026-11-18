@@ -100,9 +100,20 @@ async function generate() {
     plan.value = data.plan
     expandedShots.value = {}
     expandProgress.value = {}
-    notify(`已生成 ${data.plan.shots.length} 镜的计划，确认后展开提示词`)
+    const demo = data.plan.narrative?.startsWith('【演示数据')
+    notify(
+      demo
+        ? '未配置模型 Key，以下是固定演示数据'
+        : `已生成 ${data.plan.shots.length} 镜的计划，确认后展开提示词`,
+    )
   } catch (error) {
-    notify(`生成计划失败：${error instanceof Error ? error.message : '未知错误'}`)
+    const reason = error instanceof Error ? error.message : '未知错误'
+    // 生成失败时面板里可能还留着上一次的计划，说明清楚避免误以为是新结果
+    notify(
+      plan.value
+        ? `生成失败：${reason}（下方仍是上次保存的计划）`
+        : `生成失败：${reason}`,
+    )
   } finally {
     loading.value = false
   }

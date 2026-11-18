@@ -85,7 +85,9 @@ async def lifespan(_: FastAPI):
         settings.vision_model,
     )
     if not settings.llm_ready:
-        logger.warning("未检测到 LLM_API_KEY：生成接口将返回 503，前端会保留演示分镜")
+        logger.warning(
+            "未检测到 LLM_API_KEY：正向生成会退化为固定演示数据，逆向解析返回 503"
+        )
     yield
 
 

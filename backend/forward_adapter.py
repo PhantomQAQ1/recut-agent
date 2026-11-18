@@ -75,10 +75,15 @@ class _CompatProvider(OpenAICompatProvider):
                 body = json.loads(response.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]
-            # 免费额度对突发请求敏感（魔搭 limit_burst_rate），退避后重试
-            if exc.code in {429, 503, 504} and self._burst_retries < 2:
+            # 免费额度的限流不一定用 429：魔搭会返回 400 + limit_burst_rate，
+            # 所以同时看状态码和响应体里的关键字。
+            rate_limited = exc.code in {429, 500, 502, 503, 504} or any(
+                marker in detail.lower()
+                for marker in ("limit_burst_rate", "rate increased too quickly", "rate limit")
+            )
+            if rate_limited and self._burst_retries < 3:
                 self._burst_retries += 1
-                time.sleep(1.5 * self._burst_retries)
+                time.sleep(3 * self._burst_retries)
                 return self._request(payload)
             raise LLMError("UPSTREAM_STATUS_%s" % exc.code, detail) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
